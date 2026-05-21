@@ -1,5 +1,8 @@
 const fs = require("fs");
 const path = require("path");
+const jsObfuscator = require("javascript-obfuscator");
+
+const ob = process.argv.includes("--obfuscate");
 
 function performPackager() {
   const appRoot = process.cwd();
@@ -82,14 +85,25 @@ function packageWindows(appRoot, distDir, appName) {
 
   console.log(`[Packager] Creating Windows App structure...`);
 
-  // 1. Copy compiled Windows executable
-  const compiledExe = path.join(appRoot, "bin", "positron-runtime.exe");
-  fs.copyFileSync(compiledExe, path.join(outputFolder, `${appName}.exe`));
+  const binFolder = path.join(appRoot, "bin");
+  
+  function copyDirRecursive(src, dest) {
+    fs.readdirSync(src, { withFileTypes: true }).forEach(entry => {
+      const srcPath = path.join(src, entry.name);
+      const destPath = path.join(dest, entry.name);
+      if (entry.isDirectory()) {
+        fs.mkdirSync(destPath, { recursive: true });
+        copyDirRecursive(srcPath, destPath);
+      } else {
+        fs.copyFileSync(srcPath, destPath);
+      }
+    });
+  }
 
-  // 2. Copy code into a local resources directory alongside the exe
+  copyDirRecursive(binFolder, outputFolder);
+
   const resourcesPath = path.join(outputFolder, "resources");
   fs.mkdirSync(resourcesPath, { recursive: true });
-  
   copyAppAssets(appRoot, resourcesPath);
 
   console.log(`\n🎉 Successfully packaged Windows app directory at: ${outputFolder}`);
@@ -97,7 +111,7 @@ function packageWindows(appRoot, distDir, appName) {
 
 // Utility function to copy developer code while ignoring distribution/build folders
 function copyAppAssets(src, dest) {
-  const ignoreList = ["node_modules", "dist", "bin", ".git"];
+  const ignoreList = ["dist", "bin", ".git"];
   
   function copyRecursive(currentSrc, currentDest) {
     const items = fs.readdirSync(currentSrc);
@@ -117,6 +131,16 @@ function copyAppAssets(src, dest) {
         copyRecursive(srcPath, destPath);
       } else {
         fs.copyFileSync(srcPath, destPath);
+        if(ob) {
+          if(destPath.endsWith(".js") && !destPath.includes("node_modules")) {
+            const code = fs.readFileSync(destPath, "utf8");
+            const obfuscated = jsObfuscator.obfuscate(code, {
+              compact: true,
+              controlFlowFlattening: true,
+            });
+            fs.writeFileSync(destPath, obfuscated.getObfuscatedCode());
+          }
+        }
       }
     }
   }

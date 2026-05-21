@@ -77,20 +77,24 @@ public class IPCArgsConverter : JsonConverter<List<string>>
             app.Run();
         }
 
-        protected override void OnStartup(StartupEventArgs e)
-        {
-            base.OnStartup(e);
+protected override void OnStartup(StartupEventArgs e)
+{
+    base.OnStartup(e);
+    this.ShutdownMode = ShutdownMode.OnExplicitShutdown;
 
-            this.ShutdownMode = ShutdownMode.OnExplicitShutdown;
+    string basePath = AppDomain.CurrentDomain.BaseDirectory;
+    string targetDir = Directory.Exists(Path.Combine(basePath, "resources")) 
+        ? Path.Combine(basePath, "resources") 
+        : basePath;
 
-            if (File.Exists(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "index.js")))
-            {
-                StartNodeProcess();
-            }
+    if (File.Exists(Path.Combine(targetDir, "index.js")))
+    {
+        StartNodeProcess(targetDir);
+    }
 
-            _ipcClient = new IPCClient(new Uri("ws://localhost:9000"));
-            _ = _ipcClient.ConnectAsync();
-        }
+    _ipcClient = new IPCClient(new Uri("ws://localhost:9000"));
+    _ = _ipcClient.ConnectAsync();
+}
 
         protected override void OnExit(ExitEventArgs e)
         {
@@ -98,18 +102,20 @@ public class IPCArgsConverter : JsonConverter<List<string>>
             base.OnExit(e);
         }
 
-        private void StartNodeProcess()
+        private void StartNodeProcess(string workingDirectory)
         {
-            _nodeProcess = new Process();
-            _nodeProcess.StartInfo = new ProcessStartInfo
+            _nodeProcess = new Process
             {
-                FileName = "cmd.exe",
-                Arguments = $"/c node index.js",
-                WorkingDirectory = AppDomain.CurrentDomain.BaseDirectory,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false,
-                CreateNoWindow = true
+                StartInfo = new ProcessStartInfo
+                {
+                    FileName = "cmd.exe",
+                    Arguments = $"/c node index.js",
+                    WorkingDirectory = workingDirectory,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    UseShellExecute = false,
+                    CreateNoWindow = true
+                }
             };
 
             _nodeProcess.OutputDataReceived += (s, args) => { if (args.Data != null) Console.WriteLine($"[NODE BACKGROUND] {args.Data}"); };
