@@ -1,16 +1,20 @@
 const WebSocket = require("ws");
-const events = require("events");
+const Events = require("events");
 const cp = require("child_process");
 const fs = require("fs");
 const path = require("path");
 const { performNativeBuild } = require("./builder");
 const logger = require("./logs");
 const IpcRouter = require("./ipc");
+const { Menu } = require("./menu");
 
 
 const appRoot = process.cwd();
 const binaryName = process.platform === "win32" ? "positron-runtime.exe" : "positron-runtime";
 const binaryPath = path.join(appRoot, "bin", binaryName);
+
+const appEvents = new Events.EventEmitter();
+
 
 const isPackaged = process.env.POSITRON_PACKAGED === "true";
 
@@ -93,11 +97,7 @@ logger.info("IPC server running on port " + (process.env.POSITRON_IPC_PORT || 90
 
 let _windowCounter = 0;
 
-function ipcRouter(windowId, channel, payload) {
-  logger.info(`IPC message from window ${windowId} on channel "${channel}":`, payload);
-}
-
-class Window extends events.EventEmitter {
+class Window extends Events.EventEmitter {
   constructor(options = {}) {
     super();
     this.id = ++_windowCounter;
@@ -129,6 +129,7 @@ class Window extends events.EventEmitter {
 
     if (activeSocket && activeSocket.readyState === WebSocket.OPEN) {
       activeSocket.send(payload);
+      this.emit("command-sent", { command, args: normalizedArgs });
     } else {
       if(command != "createWindow") logger.info(`Socket not ready. Outbound command queued: ${command}`);
       commandQueue.push(payload);
@@ -142,6 +143,9 @@ class Window extends events.EventEmitter {
 sendIpc(windowId, command, args = []) {
   if (activeSocket && activeSocket.readyState === WebSocket.OPEN) {
     activeSocket.send(JSON.stringify({ windowId, command, args }));
+    this.emit("ipc-sent", { command, args });
+  } else {
+    logger.warn(`Cannot send IPC message, socket not ready. Command: ${command}`);
   }
 }
 
@@ -156,25 +160,60 @@ create(width, height) {
   if(!width) width = this.options.width || 800;
   if(!height) height = this.options.height || 600;
       this.sendCommand("createWindow", [width, height]);
+    this.emit("created");
 }
 
 close() {
   this.#created = false;
+  this.emit("close");
   this.sendCommand("closeWindow");
 }
 
 setMenu(menuTemplate) {
+  if(menuTemplate instanceof Menu) {
+    menuTemplate = menuTemplate.template;
+  }
   this.sendCommand("setMenu", [JSON.stringify(menuTemplate)]);
+  this.emit("menu-updated", menuTemplate);
 }
 
 resetMenu() {
   this.sendCommand("resetMenu");
+  this.emit("menu-updated", null);
 }
 
 alert(message) {
   this.sendCommand("alert", [message]);
+  this.emit("alert", message);
+}
+
+addUserScript(script) {
+  this.sendCommand("addUserScript", [script]);
+  this.emit("user-script-added", { content: script, filePath: null });
+}
+
+addUserScriptFromFile(filePath) {
+  fs.readFile(filePath, "utf-8", (err, data) => {
+    if (err) {
+      logger.error(`Failed to read user script from ${filePath}:`, err);
+      return;
+    }
+    this.addUserScript(data);
+    this.emit("user-script-added", { filePath, content: data });
+  });
 }
 
 }
 
-module.exports = { Window, ipc, isPackaged };
+const app = {
+
+  quit(exitCode = 0) {
+    this.events.emit("before-quit");
+    process.exit(exitCode);
+  },
+
+  events: appEvents
+  
+}
+
+module.exports = { Window, ipc, isPackaged, app };

@@ -31,7 +31,7 @@ module.exports = class IpcRouter {
   }
 
   send(windowId, channel, data = null) {
-    this.#ws.send(JSON.stringify({
+    this.#ws.emit(JSON.stringify({
       windowId,
       command: "emitToRenderer",
       args: [channel, JSON.stringify(data)],

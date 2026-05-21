@@ -2,6 +2,7 @@ const fs = require("fs");
 const path = require("path");
 const jsObfuscator = require("javascript-obfuscator");
 const { execSync } = require("child_process");
+const ResEdit = require("resedit");
 
 const ob = process.argv.includes("--obfuscate");
 let useEsbuild = false;
@@ -25,10 +26,12 @@ function performPackager() {
   if (fs.existsSync(distDir)) fs.rmSync(distDir, { recursive: true, force: true });
   fs.mkdirSync(distDir, { recursive: true });
 
-  if (process.platform === "darwin") {
+  if (process.argv.includes("--mac") || process.argv.includes("--m")) {
     packageMacOS(appRoot, distDir, appName);
-  } else if (process.platform === "win32") {
+  } else if (process.argv.includes("--windows") || process.argv.includes("--w")) {
     packageWindows(appRoot, distDir, appName);
+  } else {
+    process.platform === "win32" ? packageWindows(appRoot, distDir, appName) : packageMacOS(appRoot, distDir, appName);
   }
 }
 
@@ -124,6 +127,7 @@ function packageWindows(appRoot, distDir, appName) {
   console.log(`[Packager] Creating Windows App structure...`);
 
   const binFolder = path.join(appRoot, "bin");
+
   
   function copyDirRecursive(src, dest) {
     fs.readdirSync(src, { withFileTypes: true }).forEach(entry => {
@@ -144,6 +148,44 @@ function packageWindows(appRoot, distDir, appName) {
   fs.mkdirSync(resourcesPath, { recursive: true });
 
   handleJavaScriptPipeline(appRoot, resourcesPath);
+
+  const oldBinaryPath = path.join(outputFolder, "positron-runtime.exe");
+  const newBinaryPath = path.join(outputFolder, `${appName}.exe`);
+  fs.renameSync(oldBinaryPath, newBinaryPath);
+
+
+  console.log(`[Packager] Injecting application icon...`);
+  try {
+    const iconPath = path.join(appRoot, "icon.ico"); 
+
+    const exeBuffer = fs.readFileSync(newBinaryPath);
+    const iconBuffer = fs.readFileSync(iconPath);
+
+    const exe = ResEdit.NtExecutable.from(exeBuffer);
+    const res = ResEdit.NtExecutableResource.from(exe);
+
+    const iconFile = ResEdit.Data.IconFile.from(iconBuffer);
+    ResEdit.Resource.IconGroupEntry.replaceIconsForResource(
+      res.entries,
+      1, // Icon Group ID (1 is standard for primary app icons)
+      1033, // Language ID (1033 = English - United States)
+      iconFile.icons.map((item) => item.data) 
+    );
+
+    res.outputResource(exe);
+    const newExeBuffer = exe.generate();
+
+    fs.writeFileSync(newBinaryPath, Buffer.from(newExeBuffer));
+
+    console.log(`[Packager] Icon injection successful.`);
+  } catch (err) {
+    console.error(`[Packager] Failed to set app icon: ${err.message}`, err.stack);
+  }
+
+  const macBinaryPath = path.join(outputFolder, "positron-runtime");
+  if (fs.existsSync(macBinaryPath)) {
+    fs.rmSync(macBinaryPath);
+  }
 
   console.log(`\n🎉 Successfully packaged Windows app directory at: ${outputFolder}`);
 }

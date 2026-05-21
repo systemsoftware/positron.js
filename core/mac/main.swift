@@ -25,6 +25,17 @@ func getBuiltInHandlers() -> [String: (Int, [String]) -> Void] {
             alert.addButton(withTitle: "OK")
             alert.beginSheetModal(for: window, completionHandler: nil)
         },
+        "addUserScript": { windowId, args in
+            guard let window = windows[windowId],
+                  let webView = window.contentView as? WKWebView,
+                  let script = args.first else { return }
+            let userScript = WKUserScript(
+                source: script,
+                injectionTime: .atDocumentStart,
+                forMainFrameOnly: false
+            )
+            webView.configuration.userContentController.addUserScript(userScript)
+        },
     ]
     
     return baseHandlers + getExtensionRegistry()
@@ -264,6 +275,11 @@ func makePreloadScript(windowId: Int) -> String {
          *  @param {*}      payload  — must be JSON-serialisable
          */
         send(channel, payload = null) {
+            if(typeof channel !== 'string') {
+                console.warn('[ipc] send() failed: channel must be a string');
+                return;
+            }
+            if (!payload) payload = {}; 
           window.webkit.messageHandlers.ipc.postMessage({ channel, payload });
         },
 
