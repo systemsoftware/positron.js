@@ -1,8 +1,19 @@
 const fs = require("fs");
 const path = require("path");
 const jsObfuscator = require("javascript-obfuscator");
+const { execSync } = require("child_process");
 
 const ob = process.argv.includes("--obfuscate");
+let useEsbuild = false;
+
+try {
+  execSync("npx esbuild --version", { stdio: "ignore" });
+  useEsbuild = true;
+  console.log("[Packager] esbuild detected. Using single-file bundling pipeline.");
+} catch (e) {
+  useEsbuild = false;
+  console.warn("[Packager] WARNING: esbuild not found. Falling back to multi-file copying pipeline. (node_modules will be required at runtime!)");
+}
 
 function performPackager() {
   const appRoot = process.cwd();
@@ -21,31 +32,60 @@ function performPackager() {
   }
 }
 
+function handleJavaScriptPipeline(appRoot, resourcesPath) {
+  const targetOutputFile = path.join(resourcesPath, "index.js");
+
+  if (useEsbuild) {
+    console.log(`[Packager] Bundling JavaScript code with esbuild...`);
+    try {
+      execSync(`npx esbuild index.js --bundle --platform=node --target=node18 --outfile="${targetOutputFile}"`, { stdio: 'inherit' });
+    } catch (err) {
+      console.error("Fatal: esbuild bundling failed.");
+      process.exit(1);
+    }
+
+    if (ob) {
+      console.log(`[Packager] Obfuscating bundled application code...`);
+      if (fs.existsSync(targetOutputFile)) {
+        const code = fs.readFileSync(targetOutputFile, "utf8");
+        const obfuscated = jsObfuscator.obfuscate(code, {
+          compact: true,
+          controlFlowFlattening: true,
+        });
+        fs.writeFileSync(targetOutputFile, obfuscated.getObfuscatedCode());
+      }
+    }
+    
+    copyAppAssets(appRoot, resourcesPath);
+
+  } else {
+    console.log(`[Packager] Copying raw application assets...`);
+    copyAppAssetsFallback(appRoot, resourcesPath);
+  }
+}
+
 function packageMacOS(appRoot, distDir, appName) {
-  // macOS requires a strict structural hierarchy: App.app/Contents/MacOS/
   const appBundlePath = path.join(distDir, `${appName}.app`);
   const contentsPath = path.join(appBundlePath, "Contents");
   const macosPath = path.join(contentsPath, "MacOS");
-  const resourcesPath = path.join(contentsPath, "Resources"); // Where your JS code goes
+  const resourcesPath = path.join(contentsPath, "Resources"); 
 
   fs.mkdirSync(macosPath, { recursive: true });
   fs.mkdirSync(resourcesPath, { recursive: true });
 
   console.log(`[Packager] Creating macOS App Bundle structure...`);
 
-  // 1. Copy the compiled native runtime binary to the MacOS directory
   const compiledBinary = path.join(appRoot, "bin", "positron-runtime");
   if (!fs.existsSync(compiledBinary)) {
     console.error("Fatal: Native compiled binary missing from bin/. Run build first.");
     process.exit(1);
   }
-  // macOS expects the main binary name to match the filename of the .app wrapper
   fs.copyFileSync(compiledBinary, path.join(macosPath, appName));
-  fs.chmodSync(path.join(macosPath, appName), "755"); // Ensure it remains executable
+  fs.chmodSync(path.join(macosPath, appName), "755"); 
+  
   const packageJsonPath = path.join(appRoot, "package.json");
   const package = JSON.parse(fs.readFileSync(packageJsonPath, "utf8"));
 
-  // 2. Generate the mandatory Info.plist meta-file
   const plistContent = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -72,11 +112,9 @@ function packageMacOS(appRoot, distDir, appName) {
 </plist>`;
   fs.writeFileSync(path.join(contentsPath, "Info.plist"), plistContent);
 
-  // 3. Bundle JavaScript Application Source Code
-  console.log(`[Packager] Copying application assets into app bundle...`);
-  copyAppAssets(appRoot, resourcesPath);
+  handleJavaScriptPipeline(appRoot, resourcesPath);
 
-  console.log(`\n🎉 Successfully packaged app at: ${appBundlePath}`);
+  console.log(`\n🎉 Successfully packaged macOS app at: ${appBundlePath}`);
 }
 
 function packageWindows(appRoot, distDir, appName) {
@@ -104,14 +142,44 @@ function packageWindows(appRoot, distDir, appName) {
 
   const resourcesPath = path.join(outputFolder, "resources");
   fs.mkdirSync(resourcesPath, { recursive: true });
-  copyAppAssets(appRoot, resourcesPath);
+
+  handleJavaScriptPipeline(appRoot, resourcesPath);
 
   console.log(`\n🎉 Successfully packaged Windows app directory at: ${outputFolder}`);
 }
 
-// Utility function to copy developer code while ignoring distribution/build folders
 function copyAppAssets(src, dest) {
-  const ignoreList = ["dist", "bin", ".git"];
+  const ignoreList = ["node_modules", "dist", "bin", ".git"];
+  
+  function copyRecursive(currentSrc, currentDest) {
+    const items = fs.readdirSync(currentSrc);
+    for (const item of items) {
+      if (ignoreList.includes(item)) continue;
+
+      const srcPath = path.join(currentSrc, item);
+      const destPath = path.join(currentDest, item);
+      const stat = fs.statSync(srcPath);
+
+      if (stat.isFile() && (item === "package-lock.json" || item.endsWith(".log"))) {
+        continue;
+      }
+
+      if (stat.isDirectory()) {
+        fs.mkdirSync(destPath, { recursive: true });
+        copyRecursive(srcPath, destPath);
+      } else {
+        if (item.endsWith(".js")) continue;
+        fs.copyFileSync(srcPath, destPath);
+      }
+    }
+  }
+  copyRecursive(src, dest);
+}
+
+function copyAppAssetsFallback(src, dest) {
+
+  
+  const ignoreList = ["node_modules", "dist", "bin", ".git"];
   
   function copyRecursive(currentSrc, currentDest) {
     const items = fs.readdirSync(currentSrc);
@@ -131,8 +199,8 @@ function copyAppAssets(src, dest) {
         copyRecursive(srcPath, destPath);
       } else {
         fs.copyFileSync(srcPath, destPath);
-        if(ob) {
-          if(destPath.endsWith(".js") && !destPath.includes("node_modules")) {
+        if (ob) {
+          if (destPath.endsWith(".js") && !destPath.includes("node_modules")) {
             const code = fs.readFileSync(destPath, "utf8");
             const obfuscated = jsObfuscator.obfuscate(code, {
               compact: true,
@@ -144,9 +212,7 @@ function copyAppAssets(src, dest) {
       }
     }
   }
-
   copyRecursive(src, dest);
-  
 }
 
 module.exports = performPackager;

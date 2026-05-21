@@ -152,6 +152,15 @@ Communication relies on structured JSON communication frames routed through port
 }
 ```
 
+## ⚡ Optional: Bundling with esbuild
+It is highly recommended to bundle your frontend source files before distribution to minimize disk footprint and optimize load performance.
+
+```bash
+npm install --save-dev esbuild
+```
+
+> Note: The Positron bundling pipeline will automatically check for an esbuild installation when packaging the app. If detected, it will run a pre-pack optimization step to compile your frontend code into a single, minified bundle before copying assets into the application's production folder.
+
 ## 🛑 Environment Flags
 - POSITRON_PACKAGED: Set to "true" inside production bundles to suppress localized development shell background re-compilation triggers.
 - POSITRON_IPC_PORT: Defaults to 9000. Overrides the target WebSocket server orchestration layer binding port.
