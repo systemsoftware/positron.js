@@ -176,6 +176,19 @@ namespace PositronWindows
                     DockPanel.SetDock(webView, Dock.Bottom);
                     window.Content = dockPanel;
 
+                    var wv = new WebView2();
+
+wv.CoreWebView2InitializationCompleted += (sender, e) =>
+{
+    if (e.IsSuccess)
+    {
+        wv.CoreWebView2.DocumentTitleChanged += (s, args) =>
+        {
+            window.Title = wv.CoreWebView2.DocumentTitle;
+        };
+    }
+};
+
                     // Register before Show() so the event is never missed
                     window.Closed += (s, e) =>
                     {

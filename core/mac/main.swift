@@ -7,6 +7,10 @@ import Darwin
 
 var IS_PACKAGED = false
 
+
+var windowObservations: [Int: NSKeyValueObservation] = [:]
+
+
 public protocol PositronExtension {
     static var commandName: String { get }
     static func handle(windowId: Int, args: [String])
@@ -136,6 +140,15 @@ func handleCommand(windowId: Int, command: String, args: [String]) {
         newWindow.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
 
+              let observation = webView.observe(\.title, options: [.new]) { [weak newWindow] webView, change in
+            if let actualTitle = change.newValue as? String {
+                newWindow?.title = actualTitle
+            }
+        }
+
+         windowObservations[windowId] = observation
+
+
         print("SUCCESS: Created window \(windowId) [\(width)×\(height)]")
 
     case "closeWindow":
@@ -173,6 +186,7 @@ func handleCommand(windowId: Int, command: String, args: [String]) {
         }
         (window.contentView as? WKWebView)?.load(URLRequest(url: url))
 
+
     case "loadFile":
         guard let window = windows[windowId] else { return }
         guard let path = args.first else {
@@ -182,6 +196,7 @@ func handleCommand(windowId: Int, command: String, args: [String]) {
         let fileURL = URL(fileURLWithPath: path)
         (window.contentView as? WKWebView)?
             .loadFileURL(fileURL, allowingReadAccessTo: fileURL.deletingLastPathComponent())
+           
 
     case "evaluateJS":
         guard let window = windows[windowId] else { return }
