@@ -4,16 +4,17 @@ const { performNativeBuild } = require("../builder");
 const performPackager = require("../packager");
 const { spawn } = require("child_process");
 const [, , command] = process.argv;
+const { info, success, error } = require("../logs");
 
 switch (command) {
   case "build":
-    console.log("Starting manual Positron build...");
+    info("Starting manual Positron build...");
     const success = performNativeBuild();
     process.exit(success ? 0 : 1);
     break;
 
   case "dev":
-    console.log("Starting Positron in development mode...");
+    info("Starting Positron in development mode...");
     performNativeBuild();
     spawn("node", ["."], { stdio: "inherit" });
     break;
@@ -23,10 +24,10 @@ switch (command) {
     break;
 
   case "package":
-        console.log("Packaging Positron application for production...");
+        info("Packaging Positron application for production...");
         const buildPassed = performNativeBuild();
     if (!buildPassed) {
-      console.error("Packaging aborted due to build failures.");
+      error("Packaging aborted due to build failures.");
       process.exit(1);
     }
 

@@ -7,6 +7,7 @@ const { performNativeBuild } = require("./builder");
 const logger = require("./logs");
 const IpcRouter = require("./ipc");
 const { Menu } = require("./menu");
+const { info, error, warn, success } = require("./logs");
 
 
 const appRoot = process.cwd();
@@ -21,29 +22,29 @@ const isPackaged = process.env.POSITRON_PACKAGED === "true";
 if (!isPackaged) {
     // DEV MODE
     if (!fs.existsSync(binaryPath)) {
-        console.log("[Positron] Native binary missing. Triggering automatic background build...");
+        warn("Native binary missing. Triggering automatic background build...");
         const buildSuccess = performNativeBuild();
         if (!buildSuccess) {
-            console.error("[Positron] Fatal: Could not auto-compile native binary.");
+            error("[Positron] Fatal: Could not auto-compile native binary.");
             process.exit(1);
         }
     }
 
-    console.log("[INFO] Starting Positron render process...");
+    info("Starting Positron render process...");
     const renderProcess = cp.spawn(binaryPath);
 
     renderProcess.on("error", (err) => {
-        console.error("[ERROR] Failed to start render process:", err);
+        error("Failed to start render process:", err);
         process.exit(1);
     });
 
     renderProcess.on("close", (code) => {
-        console.log(`[Positron] Render process exited with code ${code}`);
+        info(`[Positron] Render process exited with code ${code}`);
         process.exit(code);
     });
 } else {
     // PRODUCTION MODE
-    console.log("[Positron] Packaged mode detected. Skipping native binary spawn.");
+    info("[Positron] Packaged mode detected. Skipping native binary spawn.");
 }
 
 const _ipcWS = new WebSocket.Server({ port: process.env.POSITRON_IPC_PORT || 9000 });
@@ -54,7 +55,7 @@ const commandQueue = [];
 
 _ipcWS.on("connection", ws => {
   activeSocket = ws;
-  logger.info("Client connected to IPC");
+  success("Client connected to IPC");
 
   while (commandQueue.length > 0) {
     const payload = commandQueue.shift();
@@ -65,35 +66,43 @@ _ipcWS.on("connection", ws => {
     win.emit("ready");
   });
   pendingWindows.clear();
-ws.on("message", raw => {
-  const msg = JSON.parse(raw);
 
-  switch (msg.event) {
-    case "ipcMessage": {
-      const { channel, payload } = msg.data;
-      const parsed = JSON.parse(payload);
-      ipc.dispatch(msg);
-      break;
+    ws.on("message", raw => {
+    try {
+      const msg = JSON.parse(raw);
+
+      switch (msg.event) {
+        case "ipcMessage": {
+          ipc.dispatch(ws, msg); 
+          break;
+        }
+
+        case "menuAction": 
+          appEvents.emit("menu-action", msg.data);
+          break;
+
+        case "windowClosed": {
+          info(`Window ${msg.windowId} closed`);
+          break;
+        }
+
+        default:
+          warn("Unhandled event:", msg.event, msg);
+      }
+    } catch (err) {
+      error("Failed to process incoming IPC network frame:", err);
     }
+  });
 
-    case "windowClosed": {
-      logger.info(`Window ${msg.windowId} closed`);
-      break;
-    }
-
-    default:
-      logger.warn("Unhandled event:", msg.event, msg);
-  }
-});
 
   ws.on("close", () => { 
     activeSocket = null; 
   });
 });
 
-const ipc = new IpcRouter(_ipcWS);
+const ipc = new IpcRouter();
 
-logger.info("IPC server running on port " + (process.env.POSITRON_IPC_PORT || 9000));
+info("IPC server running on port " + (process.env.POSITRON_IPC_PORT || 9000));
 
 let _windowCounter = 0;
 
@@ -131,7 +140,7 @@ class Window extends Events.EventEmitter {
       activeSocket.send(payload);
       this.emit("command-sent", { command, args: normalizedArgs });
     } else {
-      if(command != "createWindow") logger.info(`Socket not ready. Outbound command queued: ${command}`);
+      if(command != "createWindow") info(`Socket not ready. Outbound command queued: ${command}`);
       commandQueue.push(payload);
     }
   }
@@ -140,12 +149,12 @@ class Window extends Events.EventEmitter {
   loadURL(url) { this.sendCommand("loadURL", [url]); }
   loadFile(path) { this.sendCommand("loadFile", [path]); }
 
-sendIpc(windowId, command, args = []) {
+sendIpc(command, args = []) {
   if (activeSocket && activeSocket.readyState === WebSocket.OPEN) {
-    activeSocket.send(JSON.stringify({ windowId, command, args }));
+    activeSocket.send(JSON.stringify({ windowId: this.id, command, args }));
     this.emit("ipc-sent", { command, args });
   } else {
-    logger.warn(`Cannot send IPC message, socket not ready. Command: ${command}`);
+    warn(`Cannot send IPC message, socket not ready. Command: ${command}`);
   }
 }
 
@@ -153,7 +162,7 @@ sendIpc(windowId, command, args = []) {
 
 create(width, height) {
   if (this.#created) {
-    logger.warn(`Window ${this.id} is already created.`);
+    warn(`Window ${this.id} is already created.`);
     return;
   }
   this.#created = true;
@@ -172,7 +181,7 @@ close() {
 setMenu(menuTemplate) {
   if(menuTemplate instanceof Menu) {
     menuTemplate = menuTemplate.template;
-  }
+  } 
   this.sendCommand("setMenu", [JSON.stringify(menuTemplate)]);
   this.emit("menu-updated", menuTemplate);
 }
@@ -195,12 +204,22 @@ addUserScript(script) {
 addUserScriptFromFile(filePath) {
   fs.readFile(filePath, "utf-8", (err, data) => {
     if (err) {
-      logger.error(`Failed to read user script from ${filePath}:`, err);
+      error(`Failed to read user script from ${filePath}:`, err);
       return;
     }
     this.addUserScript(data);
     this.emit("user-script-added", { filePath, content: data });
   });
+}
+
+resize(width, height) {
+  this.sendCommand("resizeWindow", [width, height]);
+  this.emit("resized", { width, height });
+}
+
+openDevTools() {
+  this.sendCommand("openDevTools");
+  this.emit("devtools-opened");
 }
 
 }

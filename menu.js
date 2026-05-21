@@ -1,4 +1,4 @@
-module.exports.MenuItem = class {
+class MenuItem {
     constructor({ label="", channel="", payload={}, key="", items=[], separator=false }) {
         this.label = label;
         this.channel = channel;
@@ -24,7 +24,7 @@ module.exports.Menu = class {
 
     #template = []
 
-    constructor(template) {
+    constructor(template = []) {
         this.#template = template;
     }
 
@@ -34,5 +34,8 @@ get template() {
 
 addItem(item = new MenuItem()) {
 this.#template.push(item.json());
+return this;
 }
 }
+
+module.exports.MenuItem = MenuItem;

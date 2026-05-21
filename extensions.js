@@ -1,5 +1,6 @@
 const fs = require("fs");
 const path = require("path");
+const { info } = require("./logs");
 
 class PositronRegistry {
   constructor(appRoot) {
@@ -30,6 +31,6 @@ class PositronRegistry {
       }
     }
     
-    console.log(`Discovered ${this.nativeExtensions.length} native Positron extensions.`);
+    info(`Discovered ${this.nativeExtensions.length} native Positron extensions.`);
   }
 }

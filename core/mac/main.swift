@@ -5,6 +5,8 @@ import Darwin
 
 // MARK: - Globals
 
+var IS_PACKAGED = false
+
 public protocol PositronExtension {
     static var commandName: String { get }
     static func handle(windowId: Int, args: [String])
@@ -19,6 +21,7 @@ extension Dictionary {
 func getBuiltInHandlers() -> [String: (Int, [String]) -> Void] {
     let baseHandlers: [String: (Int, [String]) -> Void] = [
         "alert": { windowId, args in
+        print("Attempting to show alert for window \(windowId)…")
             guard let window = windows[windowId] else { return }
             let alert = NSAlert()
             alert.messageText = args.first ?? "Alert"
@@ -35,6 +38,22 @@ func getBuiltInHandlers() -> [String: (Int, [String]) -> Void] {
                 forMainFrameOnly: false
             )
             webView.configuration.userContentController.addUserScript(userScript)
+        },
+        "openDevTools": { windowId, _ in
+            print("Attempting to open DevTools for window \(windowId)…")
+        guard let window = windows[windowId],
+              let webView = window.contentView as? WKWebView else { 
+            print("WARNING: openDevTools — webview not found for window \(windowId)")
+            return 
+        }
+        
+        let selector = Selector(("_showDeveloperTools:"))
+        if webView.responds(to: selector) {
+            webView.perform(selector, with: nil)
+            print("SUCCESS: Opened DevTools for window \(windowId)")
+        } else {
+            print("ERROR: WKWebView does not respond to _showDeveloperTools:")
+        }
         },
     ]
     
@@ -78,6 +97,8 @@ func handleCommand(windowId: Int, command: String, args: [String]) {
 
         // --- WebView IPC setup ---
         let config = WKWebViewConfiguration()
+
+        config.preferences.setValue(!IS_PACKAGED, forKey: "developerExtrasEnabled")
 
         // 1. Register Swift as the handler for window.webkit.messageHandlers.ipc.postMessage(...)
         let msgHandler = WebViewIPCHandler(windowId: windowId)
@@ -429,6 +450,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         
         nodeProcess = Process()
         nodeProcess?.executableURL = URL(fileURLWithPath: "/bin/zsh")
+
+        IS_PACKAGED = true
         
         // Inject POSITRON_PACKAGED=true so Node definitively knows it's in a bundle
         let command = """

@@ -3,6 +3,7 @@ const path = require("path");
 const jsObfuscator = require("javascript-obfuscator");
 const { execSync } = require("child_process");
 const ResEdit = require("resedit");
+const { info, error, success } = require("./logs");
 
 const ob = process.argv.includes("--obfuscate");
 let useEsbuild = false;
@@ -10,10 +11,10 @@ let useEsbuild = false;
 try {
   execSync("npx esbuild --version", { stdio: "ignore" });
   useEsbuild = true;
-  console.log("[Packager] esbuild detected. Using single-file bundling pipeline.");
+  info("[Packager] esbuild detected. Using single-file bundling pipeline.");
 } catch (e) {
   useEsbuild = false;
-  console.warn("[Packager] WARNING: esbuild not found. Falling back to multi-file copying pipeline. (node_modules will be required at runtime!)");
+  info("[Packager] WARNING: esbuild not found. Falling back to multi-file copying pipeline. (node_modules will be required at runtime!)");
 }
 
 function performPackager() {
@@ -39,16 +40,16 @@ function handleJavaScriptPipeline(appRoot, resourcesPath) {
   const targetOutputFile = path.join(resourcesPath, "index.js");
 
   if (useEsbuild) {
-    console.log(`[Packager] Bundling JavaScript code with esbuild...`);
+    info(`[Packager] Bundling JavaScript code with esbuild...`);
     try {
       execSync(`npx esbuild index.js --bundle --platform=node --target=node18 --outfile="${targetOutputFile}"`, { stdio: 'inherit' });
     } catch (err) {
-      console.error("Fatal: esbuild bundling failed.");
+      error("Fatal: esbuild bundling failed.");
       process.exit(1);
     }
 
     if (ob) {
-      console.log(`[Packager] Obfuscating bundled application code...`);
+      info(`[Packager] Obfuscating bundled application code...`);
       if (fs.existsSync(targetOutputFile)) {
         const code = fs.readFileSync(targetOutputFile, "utf8");
         const obfuscated = jsObfuscator.obfuscate(code, {
@@ -62,7 +63,7 @@ function handleJavaScriptPipeline(appRoot, resourcesPath) {
     copyAppAssets(appRoot, resourcesPath);
 
   } else {
-    console.log(`[Packager] Copying raw application assets...`);
+    info(`[Packager] Copying raw application assets...`);
     copyAppAssetsFallback(appRoot, resourcesPath);
   }
 }
@@ -76,11 +77,11 @@ function packageMacOS(appRoot, distDir, appName) {
   fs.mkdirSync(macosPath, { recursive: true });
   fs.mkdirSync(resourcesPath, { recursive: true });
 
-  console.log(`[Packager] Creating macOS App Bundle structure...`);
+  info(`[Packager] Creating macOS App Bundle structure...`);
 
   const compiledBinary = path.join(appRoot, "bin", "positron-runtime");
   if (!fs.existsSync(compiledBinary)) {
-    console.error("Fatal: Native compiled binary missing from bin/. Run build first.");
+    error("Fatal: Native compiled binary missing from bin/. Run build first.");
     process.exit(1);
   }
   fs.copyFileSync(compiledBinary, path.join(macosPath, appName));
@@ -117,14 +118,14 @@ function packageMacOS(appRoot, distDir, appName) {
 
   handleJavaScriptPipeline(appRoot, resourcesPath);
 
-  console.log(`\n🎉 Successfully packaged macOS app at: ${appBundlePath}`);
+  success(`Successfully packaged macOS app at: ${appBundlePath}`);
 }
 
 function packageWindows(appRoot, distDir, appName) {
   const outputFolder = path.join(distDir, appName);
   fs.mkdirSync(outputFolder, { recursive: true });
 
-  console.log(`[Packager] Creating Windows App structure...`);
+  info(`[Packager] Creating Windows App structure...`);
 
   const binFolder = path.join(appRoot, "bin");
 
@@ -154,7 +155,7 @@ function packageWindows(appRoot, distDir, appName) {
   fs.renameSync(oldBinaryPath, newBinaryPath);
 
 
-  console.log(`[Packager] Injecting application icon...`);
+  info(`[Packager] Injecting application icon...`);
   try {
     const iconPath = path.join(appRoot, "icon.ico"); 
 
@@ -177,9 +178,9 @@ function packageWindows(appRoot, distDir, appName) {
 
     fs.writeFileSync(newBinaryPath, Buffer.from(newExeBuffer));
 
-    console.log(`[Packager] Icon injection successful.`);
+    success(`[Packager] Icon injection successful.`);
   } catch (err) {
-    console.error(`[Packager] Failed to set app icon: ${err.message}`, err.stack);
+    error(`[Packager] Failed to set app icon: ${err.message}`, err.stack);
   }
 
   const macBinaryPath = path.join(outputFolder, "positron-runtime");
@@ -187,7 +188,7 @@ function packageWindows(appRoot, distDir, appName) {
     fs.rmSync(macBinaryPath);
   }
 
-  console.log(`\n🎉 Successfully packaged Windows app directory at: ${outputFolder}`);
+  success(`Successfully packaged Windows app directory at: ${outputFolder}`);
 }
 
 function copyAppAssets(src, dest) {
