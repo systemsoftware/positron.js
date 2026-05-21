@@ -1,0 +1,9 @@
+bin/positron-runtime
+core/mac/main
+core/mac/Registry.swift
+node_modules
+package-lock.json
+.DS_Store
+
+# Soon
+addons

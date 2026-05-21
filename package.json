@@ -1,0 +1,21 @@
+{
+  "name": "positron-core",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "keywords": [
+    "app",
+    "framework",
+    "desktop"
+  ],
+  "author": "",
+  "license": "MIT",
+  "type": "commonjs",
+  "dependencies": {
+    "nan": "^2.27.0",
+    "ws": "^8.20.1"
+  },
+  "bin": {
+    "positron": "./bin/positron.js"
+  }
+}

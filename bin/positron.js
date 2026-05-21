@@ -1,0 +1,39 @@
+#! /usr/bin/env node
+
+const { performNativeBuild } = require("../builder");
+const performPackager = require("../packager");
+const { spawn } = require("child_process");
+const [, , command] = process.argv;
+
+switch (command) {
+  case "build":
+    console.log("Starting manual Positron build...");
+    const success = performNativeBuild();
+    process.exit(success ? 0 : 1);
+    break;
+
+  case "dev":
+    console.log("Starting Positron in development mode...");
+    performNativeBuild();
+    spawn("node", ["."], { stdio: "inherit" });
+    break;
+
+    case "run":
+    spawn("node", ["."], { stdio: "inherit" });
+    break;
+
+  case "package":
+        console.log("Packaging Positron application for production...");
+        const buildPassed = performNativeBuild();
+    if (!buildPassed) {
+      console.error("Packaging aborted due to build failures.");
+      process.exit(1);
+    }
+
+    performPackager();
+    break;
+
+  default:
+    console.log("Usage: npx positron [build | dev | run]");
+    process.exit(0);
+}
