@@ -77,17 +77,13 @@ _ipcWS.on("connection", ws => {
           break;
         }
 
-        case "menuAction": 
-          appEvents.emit("menu-action", msg.data);
-          break;
-
         case "windowClosed": {
           info(`Window ${msg.windowId} closed`);
           break;
         }
 
         default:
-          warn("Unhandled event:", msg.event, msg);
+          appEvents.emit(msg.event, msg.data);
       }
     } catch (err) {
       error("Failed to process incoming IPC network frame:", err);
@@ -107,7 +103,17 @@ info("IPC server running on port " + (process.env.POSITRON_IPC_PORT || 9000));
 let _windowCounter = 0;
 
 class Window extends Events.EventEmitter {
-  constructor(options = {}) {
+  constructor(options = {
+
+    darwinOptions: {
+      closable: true,
+      resizable: true,
+      minimizable: true,
+      titlebarTransparent: false,
+      titlebarVisible: true
+    }
+
+  }) {
     super();
     this.id = ++_windowCounter;
     this.options = options;
@@ -122,7 +128,7 @@ class Window extends Events.EventEmitter {
     const height = options.height ? String(options.height) : "600";
 
     if(!this.options.skipCreate) {
-      this.create(width, height);
+      this.create(width, height, options.darwinOptions);
     }
 
   }
@@ -145,9 +151,20 @@ class Window extends Events.EventEmitter {
     }
   }
 
-  setTitle(title) { this.sendCommand("setTitle", [title]); }
-  loadURL(url) { this.sendCommand("loadURL", [url]); }
-  loadFile(path) { this.sendCommand("loadFile", [path]); }
+  setTitle(title) { 
+    this.sendCommand("setTitle", [title]); 
+    this.emit("title-updated", title); 
+  }
+  loadURL(url) { 
+    this.sendCommand("loadURL", [url]); 
+    this.emit("url-loaded", url); 
+    this.emit("navigated", url); 
+  }
+  loadFile(path) { 
+    this.sendCommand("loadFile", [path]); 
+    this.emit("file-loaded", path); 
+    this.emit("navigated", path); 
+  }
 
 sendIpc(command, args = []) {
   if (activeSocket && activeSocket.readyState === WebSocket.OPEN) {
@@ -160,15 +177,31 @@ sendIpc(command, args = []) {
 
  #created = false;
 
-create(width, height) {
+create(width, height, darwinOptions = {
+  closable: true,
+  resizable: true,
+  minimizable: true,
+  titlebarTransparent: false,
+  titlebarVisible: true
+}) {
   if (this.#created) {
     warn(`Window ${this.id} is already created.`);
     return;
   }
+
+    darwinOptions = {
+    closable: true,
+    resizable: true,
+    minimizable: true,
+    titlebarTransparent: false,
+    titlebarVisible: true,
+    ...darwinOptions
+  }
+
   this.#created = true;
   if(!width) width = this.options.width || 800;
   if(!height) height = this.options.height || 600;
-      this.sendCommand("createWindow", [width, height]);
+      this.sendCommand("createWindow", [width, height, ...Object.values(darwinOptions).map(val => String(val))]);
     this.emit("created");
 }
 
@@ -220,6 +253,57 @@ resize(width, height) {
 openDevTools() {
   this.sendCommand("openDevTools");
   this.emit("devtools-opened");
+}
+
+toggleFullscreen() {
+  this.sendCommand("toggleFullscreen");
+  this.emit("fullscreen-toggled");
+}
+
+goFullscreen() {
+  this.sendCommand("fullscreen");
+  this.emit("fullscreen-entered");
+}
+
+exitFullscreen() {
+  this.sendCommand("exitFullscreen");
+  this.emit("fullscreen-exited");
+}
+
+
+goForward() {
+  this.sendCommand("forward");
+  this.emit("navigated-forward");
+}
+
+goBack() {
+  this.sendCommand("back");
+  this.emit("navigated-back");
+}
+
+hide() {
+  this.sendCommand("hideWindow");
+  this.emit("hidden");
+}
+
+show() {
+  this.sendCommand("showWindow");
+  this.emit("shown");
+}
+
+focus() {
+  this.sendCommand("focus");
+  this.emit("focused");
+}
+
+reload() {
+  this.sendCommand("reload");
+  this.emit("reloaded");
+}
+
+capturePage() {
+  this.sendCommand("capturePage");
+  this.emit("capture-page-requested");
 }
 
 }

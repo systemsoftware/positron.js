@@ -176,6 +176,7 @@ namespace PositronWindows
                     DockPanel.SetDock(webView, Dock.Bottom);
                     window.Content = dockPanel;
 
+
                     var wv = new WebView2();
 
 wv.CoreWebView2InitializationCompleted += (sender, e) =>
@@ -292,7 +293,6 @@ wv.CoreWebView2InitializationCompleted += (sender, e) =>
                     }
                     break;
 
-                // Push an event from Node down to the renderer: window.ipc.on('channel', fn)
                 case "emitToRenderer":
                     if (args.Count < 2)
                     {
@@ -301,8 +301,7 @@ wv.CoreWebView2InitializationCompleted += (sender, e) =>
                     }
                     {
                         var channel = args[0];
-                        var payload = args[1]; // must be a JSON-serialisable string
-                        // Escape the payload for safe embedding inside a JS string template
+                        var payload = args[1];
                         var escaped = payload
                             .Replace("\\", "\\\\")
                             .Replace("`", "\\`");
@@ -328,6 +327,120 @@ wv.CoreWebView2InitializationCompleted += (sender, e) =>
                 case "resetMenu":
                     RemoveMenu(windowId);
                     break;
+
+                case "openDevTools":
+                    {
+                        var wv = GetWebView(windowId);
+                        if (wv != null && wv.CoreWebView2 != null)
+                            wv.CoreWebView2.OpenDevToolsWindow();
+                    }
+                    break;
+
+                    case "hide":
+                        if (WindowsMap.TryGetValue(windowId, out var winHide))
+                            winHide.Hide();
+                        else
+                            Console.WriteLine($"WARNING: hide — no window with ID {windowId}");
+                        break;
+
+                    case "show":
+                        if (WindowsMap.TryGetValue(windowId, out var winShow))                           
+                             winShow.Show();
+                        else                            
+                            Console.WriteLine($"WARNING: show — no window with ID {windowId}");
+                        break; 
+
+                case "minimize":
+                    if (WindowsMap.TryGetValue(windowId, out var winMin))
+                        winMin.WindowState = WindowState.Minimized;
+                    else
+                        Console.WriteLine($"WARNING: minimize — no window with ID {windowId}");
+                    break;
+
+                case "maximize":
+                    if (WindowsMap.TryGetValue(windowId, out var winMax))
+                        winMax.WindowState = WindowState.Maximized;
+                    else
+                        Console.WriteLine($"WARNING: maximize — no window with ID {windowId}");
+                    break;
+
+                    case "focus":
+                        if (WindowsMap.TryGetValue(windowId, out var winFocus))
+                            winFocus.Focus();
+                        else
+                            Console.WriteLine($"WARNING: focus — no window with ID {windowId}");
+                        break;
+
+                    case "fullscreen":
+                        if (WindowsMap.TryGetValue(windowId, out var winFS))
+                            winFS.WindowState = WindowState.Maximized; // WPF doesn't have a true fullscreen mode, but this is close enough for now
+                        else
+                            Console.WriteLine($"WARNING: fullscreen — no window with ID {windowId}");
+                        break;
+
+                    case "exitFullscreen":
+                        if (WindowsMap.TryGetValue(windowId, out var winExitFS))
+                            winExitFS.WindowState = WindowState.Normal;
+                        else
+                            Console.WriteLine($"WARNING: exitFullscreen — no window with ID {windowId}");
+                        break;
+
+                    case "toggleFullscreen":
+                        if (WindowsMap.TryGetValue(windowId, out var winToggleFS))
+                            winToggleFS.WindowState = winToggleFS.WindowState == WindowState.Maximized ? WindowState.Normal : WindowState.Maximized;
+                        else
+                            Console.WriteLine($"WARNING: toggleFullscreen — no window with ID {windowId}");
+                        break;
+
+                    case "forward":
+                        {
+                            var wv = GetWebView(windowId);
+                            if (wv != null && wv.CoreWebView2 != null && wv.CoreWebView2.CanGoForward)
+                                wv.CoreWebView2.GoForward();
+                        }
+                        break;
+
+                    case "back":
+                        {
+                            var wv = GetWebView(windowId);
+                            if (wv != null && wv.CoreWebView2 != null && wv.CoreWebView2.CanGoBack)
+                                wv.CoreWebView2.GoBack();
+                        }
+                        break;
+
+                    case "reload":
+                        {
+                            var wv = GetWebView(windowId);
+                            if (wv != null && wv.CoreWebView2 != null)
+                                wv.CoreWebView2.Reload();
+                        }
+                        break;
+
+                case "capturePage":
+                    {
+                        var wv = GetWebView(windowId);
+                        if (wv != null)
+                        {
+                            try
+                            {
+                                using var ms = new MemoryStream();
+                                await wv.CoreWebView2.CapturePreviewAsync(CoreWebView2CapturePreviewImageFormat.Png, ms);
+                                var base64 = Convert.ToBase64String(ms.ToArray());
+                                _ipcClient.Send(new IPCResponse
+                                {
+                                    windowId = windowId,
+                                    @event = "capture-page-result",
+                                    data = new() { { "imageData", base64 } }
+                                });
+                            }
+                            catch (Exception ex)
+                            {
+                                Console.WriteLine($"ERROR: capturePage failed: {ex.Message}");
+                            }
+                        }
+                    }
+                    break;
+
 
                 default:
                     var registry = ExtensionRegistry.GetExtensions();

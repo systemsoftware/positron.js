@@ -81,6 +81,7 @@ struct IPCResponse: Codable {
     let data: [String: String]
 }
 
+
 // MARK: - Command Handler
 
 func handleCommand(windowId: Int, command: String, args: [String]) {
@@ -90,14 +91,32 @@ func handleCommand(windowId: Int, command: String, args: [String]) {
         let width  = args.count > 0 ? Int(args[0]) ?? 800 : 800
         let height = args.count > 1 ? Int(args[1]) ?? 600 : 600
 
+        let closable = args.count > 2 ? (args[2].lowercased() == "true") : true
+        let resizable = args.count > 3 ? (args[3].lowercased() == "true") : true
+        let minimizable = args.count > 4 ? (args[4].lowercased() == "true") : true
+        let titlebarTransparent = args.count > 5 ? (args[5].lowercased() == "true") : false
+        let titlebarVisible = args.count > 6 ? (args[6].lowercased() == "true") : true
+
+        let styleMask: NSWindow.StyleMask = [
+            .titled,
+            closable ? .closable : [],
+            resizable ? .resizable : [],
+            minimizable ? .miniaturizable : []
+        ]
+
         let frame = NSRect(x: 0, y: 0, width: width, height: height)
         let newWindow = NSWindow(
             contentRect: frame,
-            styleMask: [.titled, .closable, .resizable, .miniaturizable],
+            styleMask: styleMask,
             backing: .buffered,
             defer: false
         )
+
         newWindow.minSize = NSSize(width: 200, height: 150)
+
+                newWindow.titlebarAppearsTransparent = titlebarTransparent
+        newWindow.titleVisibility = titlebarVisible ? .visible : .hidden
+
 
         // --- WebView IPC setup ---
         let config = WKWebViewConfiguration()
@@ -187,6 +206,34 @@ func handleCommand(windowId: Int, command: String, args: [String]) {
         (window.contentView as? WKWebView)?.load(URLRequest(url: url))
 
 
+    case "hide":
+        guard let window = windows[windowId] else { return }
+        window.orderOut(nil)
+
+    case "show":
+        guard let window = windows[windowId] else { return }
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+
+    case "focus":
+        guard let window = windows[windowId] else { return }
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+
+    case "fullscreen":
+        guard let window = windows[windowId] else { return }
+        window.toggleFullScreen(nil)
+
+    case "exitFullscreen":
+        guard let window = windows[windowId] else { return }
+        if window.styleMask.contains(.fullScreen) {
+            window.toggleFullScreen(nil)
+        }
+
+    case "toggleFullscreen":
+        guard let window = windows[windowId] else { return }
+        window.toggleFullScreen(nil)
+
     case "loadFile":
         guard let window = windows[windowId] else { return }
         guard let path = args.first else {
@@ -196,7 +243,46 @@ func handleCommand(windowId: Int, command: String, args: [String]) {
         let fileURL = URL(fileURLWithPath: path)
         (window.contentView as? WKWebView)?
             .loadFileURL(fileURL, allowingReadAccessTo: fileURL.deletingLastPathComponent())
-           
+
+
+       case "forward":
+           guard let window = windows[windowId] else { return }
+            (window.contentView as? WKWebView)?.goForward()
+
+        case "back":
+            guard let window = windows[windowId] else { return }
+            (window.contentView as? WKWebView)?.goBack()    
+
+
+            case "reload":
+                guard let window = windows[windowId] else { return }
+                (window.contentView as? WKWebView)?.reload()
+
+                    case "capturePage":
+                        guard let window = windows[windowId] else { return }
+                        (window.contentView as? WKWebView)?.takeSnapshot(with: nil) { image, error in
+                            if let error {
+                                print("ERROR: capturePage failed: \(error.localizedDescription)")
+                                return
+                            }
+                            guard let image = image else {
+                                print("ERROR: capturePage failed: no image returned")
+                                return
+                            }
+
+                            guard let tiffData = image.tiffRepresentation,
+                                  let bitmap = NSBitmapImageRep(data: tiffData),
+                                  let pngData = bitmap.representation(using: .png, properties: [:]) else {
+                                print("ERROR: capturePage failed: unable to convert image to PNG")
+                                return
+                            }
+
+                            let base64PNG = pngData.base64EncodedString()
+                            AppDelegate.shared?.ipcClient.send(
+                                IPCResponse(windowId: windowId, event: "capture-page-result", data: ["image": base64PNG])
+                            )
+                        }
+
 
     case "evaluateJS":
         guard let window = windows[windowId] else { return }
