@@ -2,14 +2,43 @@ import Cocoa
 import WebKit
 import Network
 import Darwin
+import UserNotifications
 
 // MARK: - Globals
 
 var IS_PACKAGED = false
 
+let AUTH_TOKEN: String = {
+    if let envToken = ProcessInfo.processInfo.environment["POSITRON_AUTH_TOKEN"], !envToken.isEmpty {
+        // Dev Mode: Successfully grabbed the token passed down by Node!
+        return envToken
+    }
+    // Packaged Mode: We started first, so we generate the master token.
+    return UUID().uuidString
+}()
 
 var windowObservations: [Int: NSKeyValueObservation] = [:]
 
+
+func printError(_ message: String) {
+    var msg = message
+    var red = "\u{001B}[0;31m"
+    let isWarning = message.starts(with:"WARNING")
+    let isInfo = message.starts(with:"INFO")
+    if(isWarning) {
+        red = "\u{001B}[0;33m"
+        msg = message.replacingOccurrences(of: "WARNING: ", with: "")
+    }
+    if(isInfo) {
+        red = "\u{001B}[0;34m"
+        msg = message.replacingOccurrences(of: "INFO: ", with: "")
+    }
+    let reset = "\u{001B}[0m"
+
+    let tag = isWarning ? "WARNING" : (isInfo ? "INFO" : "ERROR")
+
+    print("\(red)[SWIFT \(tag)] \(msg)\(reset)")
+}
 
 public protocol PositronExtension {
     static var commandName: String { get }
@@ -25,7 +54,6 @@ extension Dictionary {
 func getBuiltInHandlers() -> [String: (Int, [String]) -> Void] {
     let baseHandlers: [String: (Int, [String]) -> Void] = [
         "alert": { windowId, args in
-        print("Attempting to show alert for window \(windowId)…")
             guard let window = windows[windowId] else { return }
             let alert = NSAlert()
             alert.messageText = args.first ?? "Alert"
@@ -44,19 +72,17 @@ func getBuiltInHandlers() -> [String: (Int, [String]) -> Void] {
             webView.configuration.userContentController.addUserScript(userScript)
         },
         "openDevTools": { windowId, _ in
-            print("Attempting to open DevTools for window \(windowId)…")
         guard let window = windows[windowId],
               let webView = window.contentView as? WKWebView else { 
-            print("WARNING: openDevTools — webview not found for window \(windowId)")
+            printError("openDevTools — webview not found for window \(windowId)")
             return 
         }
         
         let selector = Selector(("_showDeveloperTools:"))
         if webView.responds(to: selector) {
             webView.perform(selector, with: nil)
-            print("SUCCESS: Opened DevTools for window \(windowId)")
         } else {
-            print("ERROR: WKWebView does not respond to _showDeveloperTools:")
+            printError("openDevTools failed: _showDeveloperTools: selector not found on WKWebView (windowId \(windowId))")
         }
         },
     ]
@@ -64,7 +90,6 @@ func getBuiltInHandlers() -> [String: (Int, [String]) -> Void] {
     return baseHandlers + getExtensionRegistry()
 }
 
-/// All window access must happen on the main thread.
 var windows: [Int: NSWindow] = [:]
 
 // MARK: - IPC Message Types
@@ -143,7 +168,6 @@ func handleCommand(windowId: Int, command: String, args: [String]) {
         newWindow.center()
         windows[windowId] = newWindow
 
-        // Observe window close so we can clean up and notify JS
         NotificationCenter.default.addObserver(
             forName: NSWindow.willCloseNotification,
             object: newWindow,
@@ -167,12 +191,9 @@ func handleCommand(windowId: Int, command: String, args: [String]) {
 
          windowObservations[windowId] = observation
 
-
-        print("SUCCESS: Created window \(windowId) [\(width)×\(height)]")
-
     case "closeWindow":
         guard let window = windows[windowId] else {
-            print("WARNING: closeWindow — no window with ID \(windowId)")
+            printError("closeWindow — no window with ID \(windowId)")
             return
         }
         window.close() // Triggers willCloseNotification → cleanup above
@@ -180,7 +201,7 @@ func handleCommand(windowId: Int, command: String, args: [String]) {
     case "setTitle":
         guard let window = windows[windowId] else { return }
         guard let title = args.first else {
-            print("WARNING: setTitle — missing title argument")
+            printError("setTitle — missing title argument")
             return
         }
         window.title = title
@@ -190,7 +211,7 @@ func handleCommand(windowId: Int, command: String, args: [String]) {
         guard args.count >= 2,
               let width  = Int(args[0]),
               let height = Int(args[1]) else {
-            print("WARNING: resize — expected two integer arguments")
+            printError("resize — expected two integer arguments")
             return
         }
         var frame = window.frame
@@ -200,7 +221,7 @@ func handleCommand(windowId: Int, command: String, args: [String]) {
     case "loadURL":
         guard let window = windows[windowId] else { return }
         guard let urlStr = args.first, let url = URL(string: urlStr) else {
-            print("WARNING: loadURL — invalid or missing URL")
+            printError("loadURL — invalid or missing URL")
             return
         }
         (window.contentView as? WKWebView)?.load(URLRequest(url: url))
@@ -237,13 +258,144 @@ func handleCommand(windowId: Int, command: String, args: [String]) {
     case "loadFile":
         guard let window = windows[windowId] else { return }
         guard let path = args.first else {
-            print("WARNING: loadFile — missing path argument")
+            printError("loadFile — missing path argument")
             return
         }
         let fileURL = URL(fileURLWithPath: path)
         (window.contentView as? WKWebView)?
             .loadFileURL(fileURL, allowingReadAccessTo: fileURL.deletingLastPathComponent())
 
+
+        case "setBounds":
+            guard let window = windows[windowId] else { return }
+            guard args.count >= 4,
+                  let x = Int(args[0]),
+                  let y = Int(args[1]),
+                  let width = Int(args[2]),
+                  let height = Int(args[3]) else {
+                printError("setBounds — expected four integer arguments")
+                return
+            }
+            let frame = NSRect(x: x, y: y, width: width, height: height)
+            window.setFrame(frame, display: true, animate: true)
+
+        case "getBounds":
+            guard let window = windows[windowId] else { return }
+            let frame = window.frame
+            let bounds = ["x": "\(Int(frame.origin.x))", "y": "\(Int(frame.origin.y))", "width": "\(Int(frame.size.width))", "height": "\(Int(frame.size.height))"]
+            AppDelegate.shared?.ipcClient.send(
+                IPCResponse(windowId: windowId, event: "getBounds-reply-\(windowId)", data: bounds)
+            )
+
+        case "setResizable":
+            guard let window = windows[windowId] else { return }
+            guard let resizableStr = args.first, let resizable = Bool(resizableStr) else {
+                printError("setResizable — expected boolean argument")
+                return
+            }
+            if resizable {
+                window.styleMask.insert(.resizable)
+            } else {
+                window.styleMask.remove(.resizable)
+            }
+
+        case "setMinimizible":
+            guard let window = windows[windowId] else { return }
+            guard let minimizableStr = args.first, let minimizable = Bool(minimizableStr) else {
+                printError("setMinimizable — expected boolean argument")
+                return
+            }
+            if minimizable {
+                window.styleMask.insert(.miniaturizable)
+            } else {
+                window.styleMask.remove(.miniaturizable)
+            }   
+
+            case "setClosable":
+                guard let window = windows[windowId] else { return }
+                guard let closableStr = args.first, let closable = Bool(closableStr) else {
+                    printError("setClosable — expected boolean argument")
+                    return
+                }
+                if closable {
+                    window.styleMask.insert(.closable)
+                } else {
+                    window.styleMask.remove(.closable)
+                }
+
+            case "setTitlebarTransparent":
+                guard let window = windows[windowId] else { return }
+                guard let transparentStr = args.first, let transparent = Bool(transparentStr) else {
+                    printError("setTitlebarTransparent — expected boolean argument")
+                    return
+                }
+                window.titlebarAppearsTransparent = transparent
+
+            case "setTitlebarVisible":
+                guard let window = windows[windowId] else { return }
+                guard let visibleStr = args.first, let visible = Bool(visibleStr) else {
+                    printError("setTitlebarVisible — expected boolean argument")
+                    return
+                }
+                window.titleVisibility = visible ? .visible : .hidden
+
+            case "canGoBack":
+                guard let window = windows[windowId] else { return }
+                let canGoBack = (window.contentView as? WKWebView)?.canGoBack ?? false
+                AppDelegate.shared?.ipcClient.send(
+                    IPCResponse(windowId: windowId, event: "canGoBack-reply-\(windowId)", data: ["canGoBack": canGoBack ? "true" : "false"])
+                )
+
+            case "canGoForward":
+                guard let window = windows[windowId] else { return }
+                let canGoForward = (window.contentView as? WKWebView)?.canGoForward ?? false
+                AppDelegate.shared?.ipcClient.send(
+                    IPCResponse(windowId: windowId, event: "canGoForward-reply-\(windowId)", data: ["canGoForward": canGoForward ? "true" : "false"])
+                )
+
+            case "showNotification":
+                guard let title = args.first else {
+                    printError("showNotification — missing title argument")
+                    return
+                }
+                let notification = UNMutableNotificationContent()
+                notification.title = title
+                if args.count > 1 {
+                    notification.body = args[1]
+                }
+                let request = UNNotificationRequest(identifier: UUID().uuidString, content: notification, trigger: nil)
+                UNUserNotificationCenter.current().add(request) { error in
+                    if let error {
+                       printError("Failed to show notification: \(error.localizedDescription)")
+                    }
+                }
+
+        case "getURL":
+            guard let window = windows[windowId] else { return }
+            let url = (window.contentView as? WKWebView)?.url?.absoluteString ?? ""
+            AppDelegate.shared?.ipcClient.send(
+                IPCResponse(windowId: windowId, event: "getURL-reply-\(windowId)", data: ["url": url])
+            )
+
+        case "getTitle":
+            guard let window = windows[windowId] else { return }
+            let title = window.title
+            AppDelegate.shared?.ipcClient.send(
+                IPCResponse(windowId: windowId, event: "getTitle-reply-\(windowId)", data: ["title": title])
+            )
+
+        case "executeAppleScript":
+            guard let scriptSource = args.first else {
+                printError("executeAppleScript — missing script argument")
+                return
+            }
+            let script = NSAppleScript(source: scriptSource)
+            var errorInfo: NSDictionary?
+            script?.executeAndReturnError(&errorInfo)
+            if let errorInfo {
+                let errorMessage = errorInfo[NSAppleScript.errorMessage] as? String ?? "Unknown error"
+                printError("executeAppleScript failed: \(errorMessage)")
+            }
 
        case "forward":
            guard let window = windows[windowId] else { return }
@@ -262,24 +414,24 @@ func handleCommand(windowId: Int, command: String, args: [String]) {
                         guard let window = windows[windowId] else { return }
                         (window.contentView as? WKWebView)?.takeSnapshot(with: nil) { image, error in
                             if let error {
-                                print("ERROR: capturePage failed: \(error.localizedDescription)")
+                                printError("Failed to capture page: \(error.localizedDescription)")
                                 return
                             }
                             guard let image = image else {
-                                print("ERROR: capturePage failed: no image returned")
+                                printError("Failed to capture page: no image returned")
                                 return
                             }
 
                             guard let tiffData = image.tiffRepresentation,
                                   let bitmap = NSBitmapImageRep(data: tiffData),
                                   let pngData = bitmap.representation(using: .png, properties: [:]) else {
-                                print("ERROR: capturePage failed: unable to convert image to PNG")
+                                printError("Failed to capture page: unable to convert image to PNG")
                                 return
                             }
 
                             let base64PNG = pngData.base64EncodedString()
                             AppDelegate.shared?.ipcClient.send(
-                                IPCResponse(windowId: windowId, event: "capture-page-result", data: ["image": base64PNG])
+                                IPCResponse(windowId: windowId, event: "capture-page-result-\(windowId)", data: ["image": base64PNG])
                             )
                         }
 
@@ -287,32 +439,49 @@ func handleCommand(windowId: Int, command: String, args: [String]) {
     case "evaluateJS":
         guard let window = windows[windowId] else { return }
         guard let script = args.first else {
-            print("WARNING: evaluateJS — missing script argument")
+            printError("evaluateJS — missing script argument")
             return
         }
         (window.contentView as? WKWebView)?.evaluateJavaScript(script) { result, error in
             if let error {
-                print("ERROR: evaluateJS failed: \(error.localizedDescription)")
+                printError("evaluateJS failed: \(error.localizedDescription)")
             }
+            let resultStr: String
+            if let result = result {
+                if JSONSerialization.isValidJSONObject(result) {
+                    if let data = try? JSONSerialization.data(withJSONObject: result),
+                       let jsonStr = String(data: data, encoding: .utf8) {
+                        resultStr = jsonStr
+                    } else {
+                        resultStr = "\"[Unserializable Result]\""
+                    }
+                } else {
+                    resultStr = "\"\(String(describing: result))\""
+                }
+            } else {
+                resultStr = "null"
+            }
+            AppDelegate.shared?.ipcClient.send(
+                IPCResponse(windowId: windowId, event: "evaluateJS-result-\(windowId)", data: ["result": resultStr])
+            )
         }
 
     /// Push an event from Node down to the renderer: window.ipc.on('channel', fn)
     case "emitToRenderer":
         guard let window = windows[windowId] else { return }
         guard args.count >= 2 else {
-            print("WARNING: emitToRenderer — expected channel and payload arguments")
+            printError("emitToRenderer — expected channel and payload arguments")
             return
         }
         let channel = args[0]
-        let payload = args[1] // must be a JSON-serialisable string
-        // Escape the payload for safe embedding inside a JS string template
+        let payload = args[1]
         let escaped = payload
             .replacingOccurrences(of: "\\", with: "\\\\")
             .replacingOccurrences(of: "`", with: "\\`")
         let script = "window.ipc._emit(`\(channel)`, JSON.parse(`\(escaped)`));"
         (window.contentView as? WKWebView)?.evaluateJavaScript(script) { _, error in
             if let error {
-                print("ERROR: emitToRenderer failed: \(error.localizedDescription)")
+                printError("emitToRenderer failed: \(error.localizedDescription)")
             }
         }
 
@@ -321,7 +490,7 @@ func handleCommand(windowId: Int, command: String, args: [String]) {
           let data    = jsonStr.data(using: .utf8),
           let desc    = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]]
     else {
-        print("WARNING: setMenu — invalid JSON descriptor")
+        printError("setMenu — invalid JSON descriptor")
         return
     }
     NSApp.mainMenu = buildMenu(from: desc, windowId: windowId)
@@ -335,7 +504,7 @@ case "resetMenu":
         if let handler = registry[command] {
             handler(windowId, args)
         } else {
-            print("WARNING: Unknown command '\(command)' for window \(windowId)")
+            printError("Unknown command '\(command)' for window \(windowId)")
         }
     }
 }
@@ -358,7 +527,7 @@ final class WebViewIPCHandler: NSObject, WKScriptMessageHandler {
         // Renderer JS must post a plain object: { channel: String, payload: any }
         guard let body = message.body as? [String: Any],
               let channel = body["channel"] as? String else {
-            print("WARNING: WebView IPC message malformed (windowId \(windowId)): \(message.body)")
+            printError("Received malformed IPC message from renderer: \(message.body)")
             return
         }
 
@@ -423,7 +592,7 @@ func makePreloadScript(windowId: Int) -> String {
         /** Called internally by Swift's evaluateJS to deliver a push message. */
         _emit(channel, payload) {
           (_listeners[channel] || []).forEach(fn => {
-            try { fn(payload); } catch(e) { console.error('[ipc] listener error:', e); }
+            try { fn(payload); } catch(e) { console.printError('[ipc] listener error:', e); }
           });
         },
 
@@ -441,24 +610,29 @@ func makePreloadScript(windowId: Int) -> String {
 final class IPCClient {
 
     private var webSocketTask: URLSessionWebSocketTask?
+    private let authToken: String
     private let serverURL: URL
     private var reconnectAttempts = 0
     private let maxReconnectAttempts = 10
     private let reconnectDelay: TimeInterval = 2.0
 
     init(serverURL: URL = URL(string: "ws://localhost:9000")!) {
-        self.serverURL = serverURL
+        let POSITRON_IPC_PORT = ProcessInfo.processInfo.environment["POSITRON_IPC_PORT"] ?? "9000"
+        self.serverURL = URL(string: "ws://localhost:\(POSITRON_IPC_PORT)")!
+        self.authToken = AUTH_TOKEN
     }
 
     func connect() {
         guard reconnectAttempts < maxReconnectAttempts else {
-            print("ERROR: Exceeded maximum reconnect attempts (\(maxReconnectAttempts)). Giving up.")
+            printError("Exceeded maximum reconnect attempts (\(maxReconnectAttempts)). Giving up.")
             return
         }
         let session = URLSession(configuration: .default)
-        webSocketTask = session.webSocketTask(with: serverURL)
+        var request = URLRequest(url: serverURL)
+        request.setValue(authToken, forHTTPHeaderField: "X-Positron-Auth-Token")
+        webSocketTask = session.webSocketTask(with: request)
         webSocketTask?.resume()
-        print("Connecting to IPC server (attempt \(reconnectAttempts + 1))…")
+        printError("INFO: Connecting to IPC server (attempt \(reconnectAttempts + 1))…")
         reconnectAttempts = 0 // reset on successful connect
         receiveMessage()
     }
@@ -466,12 +640,12 @@ final class IPCClient {
     func send(_ response: IPCResponse) {
         guard let data = try? JSONEncoder().encode(response),
               let text = String(data: data, encoding: .utf8) else {
-            print("ERROR: Failed to encode IPCResponse")
+            printError("Failed to encode IPCResponse")
             return
         }
         webSocketTask?.send(.string(text)) { error in
             if let error {
-                print("ERROR: Failed to send IPC response: \(error.localizedDescription)")
+                printError("Failed to send IPC response: \(error.localizedDescription)")
             }
         }
     }
@@ -481,7 +655,7 @@ final class IPCClient {
             guard let self else { return }
             switch result {
             case .failure(let error):
-                print("WebSocket error: \(error.localizedDescription)")
+                printError("WebSocket error: \(error.localizedDescription)")
                 self.scheduleReconnect()
             case .success(let message):
                 switch message {
@@ -492,7 +666,7 @@ final class IPCClient {
                         self.parseAndDispatch(text)
                     }
                 @unknown default:
-                    print("WARNING: Received unknown WebSocket message type")
+                    printError("Received unknown WebSocket message type")
                 }
                 self.receiveMessage() // Continue listening
             }
@@ -507,17 +681,17 @@ final class IPCClient {
                 handleCommand(windowId: msg.windowId, command: msg.command, args: msg.args)
             }
         } catch {
-            print("ERROR: Failed to decode IPC message '\(text)': \(error)")
+            printError("Failed to decode IPC message '\(text)': \(error)")
         }
     }
 
     private func scheduleReconnect() {
         reconnectAttempts += 1
         guard reconnectAttempts < maxReconnectAttempts else {
-            print("ERROR: Exceeded maximum reconnect attempts (\(maxReconnectAttempts)). Giving up.")
+            printError("Exceeded maximum reconnect attempts (\(maxReconnectAttempts)). Giving up.")
             return
         }
-        print("Reconnecting in \(reconnectDelay)s… (attempt \(reconnectAttempts)/\(maxReconnectAttempts))")
+        printError("Reconnecting in \(reconnectDelay)s… (attempt \(reconnectAttempts)/\(maxReconnectAttempts))")
         DispatchQueue.global().asyncAfter(deadline: .now() + reconnectDelay) { [weak self] in
             self?.connect()
         }
@@ -533,12 +707,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     static weak var shared: AppDelegate?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        // BUG FIX: Set the shared instance so IPC responses can route back later!
+
         AppDelegate.shared = self
         
         if Bundle.main.bundlePath.hasSuffix(".app") {
             startNodeProcess()
-        }
+        } 
 
         ipcClient = IPCClient()
         ipcClient.connect()
@@ -554,10 +728,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         IS_PACKAGED = true
         
-        // Inject POSITRON_PACKAGED=true so Node definitively knows it's in a bundle
         let command = """
         export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
         export POSITRON_PACKAGED=true
+        export POSITRON_AUTH_TOKEN="\(AUTH_TOKEN)"
         if [ -f "$HOME/.zshrc" ]; then source "$HOME/.zshrc"; fi
         if [ -f "$HOME/.bash_profile" ]; then source "$HOME/.bash_profile"; fi
         
@@ -566,7 +740,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         """
         nodeProcess?.arguments = ["-c", command]
         
-        // 2. Pipe stdout and stderr so we can read Node's logs!
         let pipe = Pipe()
         nodeProcess?.standardOutput = pipe
         nodeProcess?.standardError = pipe
@@ -580,9 +753,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         
         do {
             try nodeProcess?.run()
-            print("Successfully requested background Node process")
         } catch {
-            print("ERROR: Failed to start Node process: \(error)")
+            printError("Failed to start Node process: \(error)")
         }
     }
 

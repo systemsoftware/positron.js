@@ -7,8 +7,16 @@ const { performNativeBuild } = require("./builder");
 const logger = require("./logs");
 const IpcRouter = require("./ipc");
 const { Menu } = require("./menu");
+const http = require("http");
+const crypto = require("crypto");
 const { info, error, warn, success } = require("./logs");
 
+const PORT = process.env.POSITRON_IPC_PORT || 9000;
+const HOST = "127.0.0.1";
+
+if (!process.env.POSITRON_AUTH_TOKEN) {
+    process.env.POSITRON_AUTH_TOKEN = crypto.randomUUID();
+}
 
 const appRoot = process.cwd();
 const binaryName = process.platform === "win32" ? "positron-runtime.exe" : "positron-runtime";
@@ -18,6 +26,14 @@ const appEvents = new Events.EventEmitter();
 
 
 const isPackaged = process.env.POSITRON_PACKAGED === "true";
+
+const EXPECTED_TOKEN = process.env.POSITRON_AUTH_TOKEN;
+
+const parseRes = (obj) => {
+  if (Object.keys(obj) > 1) return obj;
+
+  return Object.values(obj)[0];
+}
 
 if (!isPackaged) {
     // DEV MODE
@@ -31,7 +47,13 @@ if (!isPackaged) {
     }
 
     info("Starting Positron render process...");
-    const renderProcess = cp.spawn(binaryPath);
+    const renderProcess = cp.spawn(binaryPath, {
+      env: {
+        ...process.env,
+        POSITRON_AUTH_TOKEN: EXPECTED_TOKEN
+      },
+      stdio: process.env.POSITRON_SILENT_NATIVE ? "ignore" : "inherit"
+    });
 
     renderProcess.on("error", (err) => {
         error("Failed to start render process:", err);
@@ -47,13 +69,32 @@ if (!isPackaged) {
     info("[Positron] Packaged mode detected. Skipping native binary spawn.");
 }
 
-const _ipcWS = new WebSocket.Server({ port: process.env.POSITRON_IPC_PORT || 9000 });
+const httpServer = http.createServer((req, res) => {
+  if (req.method === 'GET' && req.url === '/running') {
+    res.writeHead(200, { 'Content-Type': 'text/plain' });
+    res.end('true');
+  } else {
+    res.writeHead(404, { 'Content-Type': 'text/plain' });
+    res.end('Not Found');
+  }
+});
+
+const _ipcWS = new WebSocket.Server({ server: httpServer });
 let activeSocket = null;
 const pendingWindows = new Set(); 
 
+
 const commandQueue = []; 
 
-_ipcWS.on("connection", ws => {
+_ipcWS.on("connection", (ws, req) => {
+const clientToken = req.headers["x-positron-auth-token"];
+
+  if (EXPECTED_TOKEN && clientToken !== EXPECTED_TOKEN) {
+    warn("[Security] Unauthorized local connection attempt rejected. Token:", clientToken, "Expected:", EXPECTED_TOKEN);
+    ws.close(4001, "Unauthorized token match failure.");
+    return;
+  }
+
   activeSocket = ws;
   success("Client connected to IPC");
 
@@ -67,28 +108,29 @@ _ipcWS.on("connection", ws => {
   });
   pendingWindows.clear();
 
-    ws.on("message", raw => {
-    try {
-      const msg = JSON.parse(raw);
+ws.on("message", raw => {
+  try {
+    const msg = JSON.parse(raw);
 
-      switch (msg.event) {
-        case "ipcMessage": {
-          ipc.dispatch(ws, msg); 
-          break;
+    if (msg.event === "ipcMessage" || msg.event.includes("-reply-") || msg.event.includes("-result-")) {
+      
+      const simulatedMsg = msg.event === "ipcMessage" ? msg : {
+        event: "ipcMessage",
+        windowId: msg.windowId,
+        data: {
+          channel: msg.event,
+          payload: msg.data
         }
-
-        case "windowClosed": {
-          info(`Window ${msg.windowId} closed`);
-          break;
-        }
-
-        default:
-          appEvents.emit(msg.event, msg.data);
-      }
-    } catch (err) {
-      error("Failed to process incoming IPC network frame:", err);
+      };
+      
+      ipc.dispatch(ws, simulatedMsg);
+    } else {
+      appEvents.emit(msg.event, msg.data);
     }
-  });
+  } catch (err) {
+    error("Failed to process incoming IPC network frame:", err);
+  }
+});
 
 
   ws.on("close", () => { 
@@ -97,8 +139,6 @@ _ipcWS.on("connection", ws => {
 });
 
 const ipc = new IpcRouter();
-
-info("IPC server running on port " + (process.env.POSITRON_IPC_PORT || 9000));
 
 let _windowCounter = 0;
 
@@ -166,12 +206,17 @@ class Window extends Events.EventEmitter {
     this.emit("navigated", path); 
   }
 
-sendIpc(command, args = []) {
+sendIpc(channel, args = []) {
   if (activeSocket && activeSocket.readyState === WebSocket.OPEN) {
-    activeSocket.send(JSON.stringify({ windowId: this.id, command, args }));
-    this.emit("ipc-sent", { command, args });
+    const payload = JSON.stringify({
+      windowId: this.id,
+      command: "emitToRenderer",
+      args: [channel, JSON.stringify(args)]
+    });
+    activeSocket.send(payload);
+    this.emit("ipc-sent", { channel, args });
   } else {
-    warn(`Cannot send IPC message, socket not ready. Command: ${command}`);
+    warn(`Cannot send IPC message, socket not ready. Channel: ${channel}`);
   }
 }
 
@@ -301,9 +346,82 @@ reload() {
   this.emit("reloaded");
 }
 
-capturePage() {
-  this.sendCommand("capturePage");
-  this.emit("capture-page-requested");
+async capturePage() {
+ const response = await this.request("capturePage", `capture-page-result-${this.id}`);
+ return response.image ? Buffer.from(response.image, "base64") : null;
+}
+
+async canGoBack() {
+ const response = await this.request("canGoBack", `canGoBack-reply-${this.id}`);
+ return response === "true";
+}
+
+async request(command, replyChannel) {
+  return new Promise((resolve) => {
+    const unsubscribe = ipc.handle(replyChannel, (data) => {
+      unsubscribe();
+      resolve(data);
+    });
+
+    this.sendCommand(command);
+  });
+}
+
+async canGoForward() {
+  const response = await this.request("canGoForward", `canGoForward-reply-${this.id}`);
+  return response === "true";
+}
+
+showNotification(title, body, options = {}) {
+  this.sendCommand("showNotification", [title, body, JSON.stringify(options)]);
+  this.emit("notification-shown", { title, body, options });
+}
+
+setCloseable(isClosable) {
+  this.sendCommand("setCloseable", [String(isClosable)]);
+  this.emit("closeable-updated", isClosable);
+}
+
+setResizable(isResizable) {
+  this.sendCommand("setResizable", [String(isResizable)]);
+  this.emit("resizable-updated", isResizable);
+}
+
+setMinimizable(isMinimizable) {
+  this.sendCommand("setMinimizable", [String(isMinimizable)]);
+  this.emit("minimizable-updated", isMinimizable);
+}
+
+setBounds(x, y, width, height) {
+  this.sendCommand("setBounds", [x, y, width, height]);
+  this.emit("bounds-updated", { x, y, width, height });
+}
+
+async getBounds() {
+  return await this.request("getBounds", `getBounds-reply-${this.id}`);
+}
+
+async getURL() {
+  return await this.request("getURL", `getURL-reply-${this.id}`);
+}
+
+async getTitle() {
+  return await this.request("getTitle", `getTitle-reply-${this.id}`);
+}
+
+setTitlebarVisible(isVisible) {
+  this.sendCommand("setTitlebarVisible", [String(isVisible)]);
+  this.emit("titlebar-visibility-updated", isVisible);
+}
+
+setTitlebarTransparent(isTransparent) {
+  this.sendCommand("setTitlebarTransparent", [String(isTransparent)]);
+  this.emit("titlebar-transparency-updated", isTransparent);
+}
+
+async evaluateJavaScript(script) {
+const res = await this.request("evaluateJS", `evaluateJS-reply-${this.id}`);
+return res;
 }
 
 }
@@ -320,3 +438,7 @@ const app = {
 }
 
 module.exports = { Window, ipc, isPackaged, app };
+
+httpServer.listen(PORT, HOST, () => {
+info("IPC server running on " + HOST + ":" + PORT);
+});

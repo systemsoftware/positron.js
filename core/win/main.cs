@@ -15,9 +15,13 @@ using Microsoft.Web.WebView2.Core;
 using Microsoft.Web.WebView2.Wpf;
 using System.Text.Json.Serialization;
 
+
+
 namespace PositronWindows
 {
+    
     // MARK: - IPC Message Types
+    
 
     public class IPCMessage
     {
@@ -64,7 +68,36 @@ namespace PositronWindows
 
     public partial class App : Application
     {
-        // Mirrors Swift's IS_PACKAGED global — true when launched from a built bundle
+
+        private static void error(string message)
+{
+    string red = "\u001b[31m";
+
+    bool isWarning = message.StartsWith("WARNING");
+
+    bool isInfo = message.StartsWith("INFO");
+
+    if (isWarning)
+            {
+                red = "\u001b[33m";
+                message = message.Replace("WARNING: ", "");
+            }
+
+    if (isInfo)
+            {
+                red = "\u001b[34m";
+                message = message.Replace("INFO: ", "");
+            }
+
+    string tag = isWarning ? "WARNING" : (isInfo ? "INFO" : "ERROR");
+
+    string reset = "\u001b[0m";
+    Console.WriteLine($"{red}[C# {tag}] {message}{reset}");
+}
+
+        private static readonly string AuthToken = 
+            Environment.GetEnvironmentVariable("POSITRON_AUTH_TOKEN") ?? Guid.NewGuid().ToString();
+
         public static bool IsPackaged { get; private set; } = false;
 
         private static IPCClient _ipcClient = null!;
@@ -98,7 +131,7 @@ namespace PositronWindows
             }
 
             _ipcClient = new IPCClient(new Uri("ws://localhost:9000"));
-            _ = _ipcClient.ConnectAsync();
+            _ = _ipcClient.ConnectAsync(AuthToken);
         }
 
         protected override void OnExit(ExitEventArgs e)
@@ -122,7 +155,7 @@ namespace PositronWindows
                     RedirectStandardError = true,
                     UseShellExecute = false,
                     CreateNoWindow = true,
-                    EnvironmentVariables = { ["POSITRON_PACKAGED"] = "true" }
+                    EnvironmentVariables = { ["POSITRON_PACKAGED"] = "true", ["POSITRON_AUTH_TOKEN"] = AuthToken }
                 }
             };
 
@@ -140,11 +173,10 @@ namespace PositronWindows
                 _nodeProcess.Start();
                 _nodeProcess.BeginOutputReadLine();
                 _nodeProcess.BeginErrorReadLine();
-                Console.WriteLine("Successfully requested background Node process");
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"ERROR: Failed to start Node process: {ex.Message}");
+                error($"Failed to start Node process: {ex.Message}");
             }
         }
 
@@ -218,8 +250,6 @@ wv.CoreWebView2InitializationCompleted += (sender, e) =>
                     {
                         HandleWebViewIPC(windowId, e.WebMessageAsJson);
                     };
-
-                    Console.WriteLine($"SUCCESS: Created window {windowId} [{width}×{height}]");
                     break;
                 }
 
@@ -227,14 +257,14 @@ wv.CoreWebView2InitializationCompleted += (sender, e) =>
                     if (WindowsMap.TryGetValue(windowId, out var winToClose))
                         winToClose.Close(); // Triggers Closed → cleanup above
                     else
-                        Console.WriteLine($"WARNING: closeWindow — no window with ID {windowId}");
+                        error($"closeWindow — no window found with ID {windowId}");
                     break;
 
                 case "setTitle":
                     if (!WindowsMap.TryGetValue(windowId, out var winTitle)) break;
                     if (args.Count == 0)
                     {
-                        Console.WriteLine("WARNING: setTitle — missing title argument");
+                        error("setTitle — missing title argument");
                         break;
                     }
                     winTitle.Title = args[0];
@@ -244,7 +274,7 @@ wv.CoreWebView2InitializationCompleted += (sender, e) =>
                     if (!WindowsMap.TryGetValue(windowId, out var winSize)) break;
                     if (args.Count < 2 || !int.TryParse(args[0], out var newW) || !int.TryParse(args[1], out var newH))
                     {
-                        Console.WriteLine("WARNING: resize — expected two integer arguments");
+                        error("resize — expected two integer arguments");
                         break;
                     }
                     winSize.Width  = newW;
@@ -255,7 +285,7 @@ wv.CoreWebView2InitializationCompleted += (sender, e) =>
                     if (!WindowsMap.TryGetValue(windowId, out _)) break;
                     if (args.Count == 0)
                     {
-                        Console.WriteLine("WARNING: loadURL — invalid or missing URL");
+                        error("loadURL — invalid or missing URL");
                         break;
                     }
                     {
@@ -268,7 +298,7 @@ wv.CoreWebView2InitializationCompleted += (sender, e) =>
                     if (!WindowsMap.TryGetValue(windowId, out _)) break;
                     if (args.Count == 0)
                     {
-                        Console.WriteLine("WARNING: loadFile — missing path argument");
+                        error("loadFile — missing path argument");
                         break;
                     }
                     {
@@ -280,7 +310,7 @@ wv.CoreWebView2InitializationCompleted += (sender, e) =>
                 case "evaluateJS":
                     if (args.Count == 0)
                     {
-                        Console.WriteLine("WARNING: evaluateJS — missing script argument");
+                        error("evaluateJS — missing script argument");
                         break;
                     }
                     {
@@ -288,15 +318,35 @@ wv.CoreWebView2InitializationCompleted += (sender, e) =>
                         if (wv != null)
                         {
                             try { await wv.ExecuteScriptAsync(args[0]); }
-                            catch (Exception ex) { Console.WriteLine($"ERROR: evaluateJS failed: {ex.Message}"); }
+                            catch (Exception ex) { error($"evaluateJS failed: {ex.Message}"); }
                         }
+                    }
+                    break;
+
+                case "showNotification":
+                    if (args.Count < 2)
+                    {
+                        error("showNotification — expected title and body arguments");
+                        break;
+                    }
+                    {
+                        var title = args[0];
+                        var body  = args[1];
+                        var notification = new System.Windows.Forms.NotifyIcon
+                        {
+                            Visible = true,
+                            Icon = System.Drawing.SystemIcons.Application,
+                            BalloonTipTitle = title,
+                            BalloonTipText = body
+                        };
+                        notification.ShowBalloonTip(3000);
                     }
                     break;
 
                 case "emitToRenderer":
                     if (args.Count < 2)
                     {
-                        Console.WriteLine("WARNING: emitToRenderer — expected channel and payload arguments");
+                        error("emitToRenderer — expected channel and payload arguments");
                         break;
                     }
                     {
@@ -310,7 +360,7 @@ wv.CoreWebView2InitializationCompleted += (sender, e) =>
                         if (wv != null)
                         {
                             try { await wv.ExecuteScriptAsync(script); }
-                            catch (Exception ex) { Console.WriteLine($"ERROR: emitToRenderer failed: {ex.Message}"); }
+                            catch (Exception ex) { error($"emitToRenderer failed: {ex.Message}"); }
                         }
                     }
                     break;
@@ -318,7 +368,7 @@ wv.CoreWebView2InitializationCompleted += (sender, e) =>
                 case "setMenu":
                     if (args.Count == 0)
                     {
-                        Console.WriteLine("WARNING: setMenu — invalid JSON descriptor");
+                        error("setMenu — missing menu descriptor argument");
                         break;
                     }
                     BuildAndAttachMenu(windowId, args[0]);
@@ -339,57 +389,41 @@ wv.CoreWebView2InitializationCompleted += (sender, e) =>
                     case "hide":
                         if (WindowsMap.TryGetValue(windowId, out var winHide))
                             winHide.Hide();
-                        else
-                            Console.WriteLine($"WARNING: hide — no window with ID {windowId}");
                         break;
 
                     case "show":
                         if (WindowsMap.TryGetValue(windowId, out var winShow))                           
                              winShow.Show();
-                        else                            
-                            Console.WriteLine($"WARNING: show — no window with ID {windowId}");
                         break; 
 
                 case "minimize":
                     if (WindowsMap.TryGetValue(windowId, out var winMin))
                         winMin.WindowState = WindowState.Minimized;
-                    else
-                        Console.WriteLine($"WARNING: minimize — no window with ID {windowId}");
                     break;
 
                 case "maximize":
                     if (WindowsMap.TryGetValue(windowId, out var winMax))
                         winMax.WindowState = WindowState.Maximized;
-                    else
-                        Console.WriteLine($"WARNING: maximize — no window with ID {windowId}");
                     break;
 
                     case "focus":
                         if (WindowsMap.TryGetValue(windowId, out var winFocus))
                             winFocus.Focus();
-                        else
-                            Console.WriteLine($"WARNING: focus — no window with ID {windowId}");
                         break;
 
                     case "fullscreen":
                         if (WindowsMap.TryGetValue(windowId, out var winFS))
-                            winFS.WindowState = WindowState.Maximized; // WPF doesn't have a true fullscreen mode, but this is close enough for now
-                        else
-                            Console.WriteLine($"WARNING: fullscreen — no window with ID {windowId}");
+                            winFS.WindowState = WindowState.Maximized;
                         break;
 
                     case "exitFullscreen":
                         if (WindowsMap.TryGetValue(windowId, out var winExitFS))
                             winExitFS.WindowState = WindowState.Normal;
-                        else
-                            Console.WriteLine($"WARNING: exitFullscreen — no window with ID {windowId}");
                         break;
 
                     case "toggleFullscreen":
                         if (WindowsMap.TryGetValue(windowId, out var winToggleFS))
                             winToggleFS.WindowState = winToggleFS.WindowState == WindowState.Maximized ? WindowState.Normal : WindowState.Maximized;
-                        else
-                            Console.WriteLine($"WARNING: toggleFullscreen — no window with ID {windowId}");
                         break;
 
                     case "forward":
@@ -429,14 +463,78 @@ wv.CoreWebView2InitializationCompleted += (sender, e) =>
                                 _ipcClient.Send(new IPCResponse
                                 {
                                     windowId = windowId,
-                                    @event = "capture-page-result",
+                                    @event = "capture-page-result-" + windowId,
                                     data = new() { { "imageData", base64 } }
                                 });
                             }
                             catch (Exception ex)
                             {
-                                Console.WriteLine($"ERROR: capturePage failed: {ex.Message}");
+                                error($"capturePage failed: {ex.Message}");
                             }
+                        }
+                    }
+                    break;
+
+                case "canGoBack":
+                    {
+                        var wv = GetWebView(windowId);
+                        if (wv != null && wv.CoreWebView2 != null)
+                        {
+                            bool canGoBack = wv.CoreWebView2.CanGoBack;
+                            _ipcClient.Send(new IPCResponse
+                            {
+                                windowId = windowId,
+                                @event = "canGoBack-reply-" + windowId,
+                                data = new() { { "canGoBack", canGoBack.ToString().ToLower() } }
+                            });
+                        }
+                    }
+                    break;
+
+                    case "canGoForward":
+                    {
+                        var wv = GetWebView(windowId);
+                        if (wv != null && wv.CoreWebView2 != null)
+                        {
+                            bool canGoForward = wv.CoreWebView2.CanGoForward;
+                            _ipcClient.Send(new IPCResponse
+                            {
+                                windowId = windowId,
+                                @event = "canGoForward-reply-" + windowId,
+                                data = new() { { "canGoForward", canGoForward.ToString().ToLower() } }
+                            });
+                        }
+                    }
+                    break;
+
+                case "getURL":
+                    {
+                        var wv = GetWebView(windowId);
+                        if (wv != null && wv.CoreWebView2 != null)
+                        {
+                            string url = wv.CoreWebView2.Source;
+                            _ipcClient.Send(new IPCResponse
+                            {
+                                windowId = windowId,
+                                @event = "getURL-reply-" + windowId,
+                                data = new() { { "url", url } }
+                            });
+                        }
+                    }
+                    break;
+
+                    case "getTitle":
+                    {
+                        var wv = GetWebView(windowId);
+                        if (wv != null && wv.CoreWebView2 != null)
+                        {
+                            string title = wv.CoreWebView2.DocumentTitle;
+                            _ipcClient.Send(new IPCResponse
+                            {
+                                windowId = windowId,
+                                @event = "getTitle-reply-" + windowId,
+                                data = new() { { "title", title } }
+                            });
                         }
                     }
                     break;
@@ -447,7 +545,7 @@ wv.CoreWebView2InitializationCompleted += (sender, e) =>
                     if (registry.TryGetValue(command, out var handler))
                         handler(windowId, args);
                     else
-                        Console.WriteLine($"WARNING: Unknown command '{command}' for window {windowId}");
+                        error($"Unknown command '{command}' for window {windowId}");
                     break;
             }
         }
@@ -475,7 +573,7 @@ wv.CoreWebView2InitializationCompleted += (sender, e) =>
             var descriptor = JsonSerializer.Deserialize<List<JsonNode>>(jsonStr);
             if (descriptor == null)
             {
-                Console.WriteLine("WARNING: setMenu — invalid JSON descriptor");
+                error("setMenu — invalid JSON descriptor");
                 return;
             }
 
@@ -558,7 +656,7 @@ wv.CoreWebView2InitializationCompleted += (sender, e) =>
 
                 if (channel == null)
                 {
-                    Console.WriteLine($"WARNING: WebView IPC message malformed (windowId {windowId}): {rawJson}");
+                    error($"WebView IPC message malformed (windowId {windowId}): {rawJson}");
                     return;
                 }
 
@@ -574,8 +672,8 @@ wv.CoreWebView2InitializationCompleted += (sender, e) =>
                 });
             }
             catch (Exception ex)
-            {
-                Console.WriteLine($"ERROR: Failed to decode WebView IPC message: {ex.Message}");
+                {
+                    error($"Failed to handle WebView IPC message: {ex.Message}");
             }
         }
 
@@ -647,29 +745,37 @@ wv.CoreWebView2InitializationCompleted += (sender, e) =>
 
         public IPCClient(Uri serverUri) => _serverUri = serverUri;
 
-        public async Task ConnectAsync()
+       private static void error(string message)
+        {
+            string red = "\u001b[31m";
+            string reset = "\u001b[0m";
+            Console.WriteLine($"{red}[ERROR] {message}{reset}");
+        }
+
+        public async Task ConnectAsync(string authToken)
         {
             while (!_cts.IsCancellationRequested)
             {
                 if (_reconnectAttempts >= MaxReconnectAttempts)
                 {
-                    Console.WriteLine($"ERROR: Exceeded maximum reconnect attempts ({MaxReconnectAttempts}). Giving up.");
+                    error($"Exceeded maximum reconnect attempts ({MaxReconnectAttempts}). Giving up.");
                     return;
                 }
 
                 try
                 {
                     _ws = new ClientWebSocket();
-                    Console.WriteLine($"Connecting to IPC server (attempt {_reconnectAttempts + 1})…");
+                    _ws.Options.SetRequestHeader("x-positron-auth-token", authToken);
+                    error($"INFO: Connecting to IPC server (attempt {_reconnectAttempts + 1})…");
                     await _ws.ConnectAsync(_serverUri, _cts.Token);
-                    _reconnectAttempts = 0; // reset on successful connect
-                    Console.WriteLine("Connected to IPC server.");
+                    _reconnectAttempts = 0;
+                    error("INFO: Connected to IPC server.");
                     await ReceiveLoopAsync();
                 }
                 catch (Exception ex)
-                {
+                { 
                     _reconnectAttempts++;
-                    Console.WriteLine($"WebSocket error: {ex.Message}. Reconnecting in {ReconnectDelayMs / 1000}s… (attempt {_reconnectAttempts}/{MaxReconnectAttempts})");
+                    error($"WebSocket error: {ex.Message}. Reconnecting in {ReconnectDelayMs / 1000}s… (attempt {_reconnectAttempts}/{MaxReconnectAttempts})");
                     await Task.Delay(ReconnectDelayMs);
                 }
             }
@@ -687,7 +793,7 @@ wv.CoreWebView2InitializationCompleted += (sender, e) =>
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"ERROR: Failed to send IPC response: {ex.Message}");
+                error($"Failed to send IPC response: {ex.Message}");
             }
         }
 
@@ -737,13 +843,13 @@ wv.CoreWebView2InitializationCompleted += (sender, e) =>
                     }
                     catch (Exception ex)
                     {
-                        Console.WriteLine($"ERROR: Failed to decode IPC message '{text}': {ex.Message}\n{ex.StackTrace}");
+                        error($"Failed to decode IPC message '{text}': {ex.Message}\n{ex.StackTrace}");
                     }
                 });
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"ERROR: Failed to decode IPC message '{text}': {ex.Message}");
+                error($"Failed to decode IPC message '{text}': {ex.Message}");
             }
         }
     }

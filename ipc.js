@@ -3,31 +3,70 @@ const { warn } = require("./logs");
 module.exports = class IpcRouter {
   #handlers = new Map();
 
+  /**
+   * Registers a handler for a specific IPC channel. Returns a function to unregister the handler.
+   * @param {string} channel 
+   * @param {function} fn 
+   * @returns {function} A function to unregister the handler.
+   */
   handle(channel, fn) {
-    this.#handlers.set(channel, fn);
-    return this;
+    if (!this.#handlers.has(channel)) {
+      this.#handlers.set(channel, new Set());
+    }
+
+    this.#handlers.get(channel).add(fn);
+
+    return () => {
+      this.#handlers.get(channel)?.delete(fn);
+
+      if (this.#handlers.get(channel)?.size === 0) {
+        this.#handlers.delete(channel);
+      }
+    };
   }
 
-  dispatch(ws, msg) {
+  /**
+   * @internal
+   */
+ dispatch(ws, msg) {
     if (msg.event !== "ipcMessage") return false;
 
     const { channel, payload } = msg.data;
-    
-    const parsed = typeof payload === "string" ? JSON.parse(payload) : payload;
-    const handler = this.#handlers.get(channel);
 
-    if (!handler) {
-      warn(`[ipc] No handler for channel "${channel}"`);
+    const parsed =
+      typeof payload === "string"
+        ? JSON.parse(payload)
+        : payload;
+
+    const handlers = this.#handlers.get(channel);
+
+    if (!handlers || handlers.size === 0) {
+      warn(`[ipc] No handlers for channel "${channel}"`);
       return false;
     }
 
-    const reply = (data) => this.send(ws, msg.windowId, channel + "-reply", data);
-    const emit  = (ch, data) => this.send(ws, msg.windowId, ch, data);
+    const reply = (data) =>
+      this.send(ws, msg.windowId, channel + "-reply", data);
 
-    handler(parsed, { reply, emit, windowId: msg.windowId });
+    const emit = (ch, data) =>
+      this.send(ws, msg.windowId, ch, data);
+
+    for (const handler of handlers) {
+      try {
+        handler(parsed, {
+          reply,
+          emit,
+          windowId: msg.windowId,
+        });
+      } catch (err) {
+        warn(`[ipc] Handler error on "${channel}": ${err.stack || err}`);
+      }
+    }
+
     return true;
   }
 
+  /** @internal */
   send(ws, windowId, channel, data = null) {
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({
