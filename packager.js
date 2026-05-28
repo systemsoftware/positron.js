@@ -12,7 +12,7 @@ let useEsbuild = false;
 
 const copyBinary = (destPath) => {
 
-  if(process.argv.includes("--nn") || process.argv.includes("--no-node")) {
+  if(process.argv.includes("--nn") || process.argv.includes("--no-node") || useEsbuild === false) {
     info(`[Packager] Skipping Node.js binary inclusion.`);
     return;
   }
@@ -32,7 +32,7 @@ const copyBinary = (destPath) => {
 
 const downloadNodeBinary = (platform, bPath) => {
 
-    if(process.argv.includes("--nn") || process.argv.includes("--no-node")) {
+    if(process.argv.includes("--nn") || process.argv.includes("--no-node") || useEsbuild === false) {
     info(`[Packager] Skipping Node.js binary inclusion.`);
     return;
   }

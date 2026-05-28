@@ -22,6 +22,18 @@ var windowObservations: [Int: NSKeyValueObservation] = [:]
 
 import Foundation
 
+final class PositronWebView: WKWebView {
+    override func rightMouseDown(with event: NSEvent) {
+        if let customMenu = self.menu {
+            print("Intercepted right-click! Forcing custom context menu...")
+            
+            customMenu.popUp(positioning: nil, at: NSEvent.mouseLocation, in: nil)
+        } else {
+            super.rightMouseDown(with: event)
+        }
+    }
+}
+
 func getRandomOpenPort() -> UInt16? {
 
         if let envPort = ProcessInfo.processInfo.environment["POSITRON_IPC_PORT"], let portNum = UInt16(envPort) {
@@ -214,7 +226,7 @@ func handleCommand(windowId: Int, command: String, args: [String]) {
         )
         config.userContentController.addUserScript(preload)
 
-        let webView = WKWebView(frame: NSRect(origin: .zero, size: frame.size), configuration: config)
+        let webView = PositronWebView(frame: NSRect(origin: .zero, size: frame.size), configuration: config)
         // Resize webview automatically when the window resizes
         webView.autoresizingMask = [.width, .height]
         newWindow.contentView = webView
@@ -562,6 +574,36 @@ UNUserNotificationCenter.current().requestAuthorization(
                 printError("emitToRenderer failed: \(error.localizedDescription)")
             }
         }
+
+        case "setAlwaysOnTop":
+            guard let window = windows[windowId] else { return }
+            guard let alwaysOnTopStr = args.first, let alwaysOnTop = Bool(alwaysOnTopStr) else {
+                printError("setAlwaysOnTop — expected boolean argument")
+                return
+            }
+            window.level = alwaysOnTop ? .floating : .normal
+
+        case "setContextMenu":
+            print("Setting context menu for window \(windowId)")
+            guard let window = windows[windowId] else { return }
+            guard let jsonStr = args.first,
+                  let data    = jsonStr.data(using: .utf8),
+                  let desc    = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]]
+            else {
+                printError("setContextMenu — invalid JSON descriptor")
+                return
+            }
+            
+            let menu = buildContextMenu(from: desc, windowId: windowId)
+            
+            DispatchQueue.main.async {
+                if let view = window.contentView {
+                    print("Attaching context menu to content view for window \(windowId)")
+                    view.menu = menu
+                } else {
+                    printError("setContextMenu — no content view to attach menu")
+                }
+            }
 
         case "setMenu":
     guard let jsonStr = args.first,
@@ -924,41 +966,72 @@ final class MenuActionTarget: NSObject {
     }
 }
 
-// Keep targets alive — NSMenuItem.target is weak-ish and won't retain them.
-var menuActionTargets: [MenuActionTarget] = []
+// MARK: - Safe Menu Retention & Subclasses
 
-/// Descriptor mirrors the JSON you send from Node.
-/// {
-///   "label": "File",
-///   "items": [
-///     { "label": "New",  "channel": "menu:new",  "payload": "{}", "key": "n" },
-///     { "separator": true },
-///     { "label": "Open", "channel": "menu:open", "payload": "{}", "key": "o",
-///       "items": [ /* submenu */ ] }
-///   ]
-/// }
+/// A custom NSMenuItem that strongly retains its IPC action target 
+/// so we can stop managing volatile global arrays.
+final class PositronMenuItem: NSMenuItem {
+    var retainedTarget: PositronMenuTarget? {
+        didSet {
+            self.target = retainedTarget
+        }
+    }
+}
+
+/// A unified target handler that handles both main menu and context menu clicks.
+final class PositronMenuTarget: NSObject {
+    let windowId: Int
+    let channel: String
+    let payload: String
+    let label: String?
+    let isContextMenu: Bool
+
+    init(windowId: Int, channel: String, payload: String, label: String?, isContextMenu: Bool) {
+        self.windowId = windowId
+        self.channel  = channel
+        self.payload  = payload
+        self.label    = label
+        self.isContextMenu = isContextMenu
+    }
+
+    @objc func fire(_ sender: Any?) {
+        let eventName = isContextMenu ? "context-menu-action" : "menu-action"
+        AppDelegate.shared?.ipcClient.send(
+            IPCResponse(
+                windowId: windowId,
+                event: eventName,
+                data: ["channel": channel, "payload": payload, "label": label ?? "label"]
+            )
+        )
+    }
+}
+
+// MARK: - Menu Builders
+
 func buildMenu(from descriptor: [[String: Any]], windowId: Int) -> NSMenu {
-    menuActionTargets.removeAll() // clear old targets on each rebuild
-
-    let mainMenu = NSMenu()
-
+    let menu = NSMenu()
     for topLevel in descriptor {
         let topItem = NSMenuItem()
         topItem.title = topLevel["label"] as? String ?? ""
-        mainMenu.addItem(topItem)
+        menu.addItem(topItem)
 
         let sub = NSMenu(title: topItem.title)
         topItem.submenu = sub
 
         if let items = topLevel["items"] as? [[String: Any]] {
-            populateMenu(sub, with: items, windowId: windowId)
+            populateMenu(sub, with: items, windowId: windowId, isContextMenu: false)
         }
     }
-
-    return mainMenu
+    return menu
 }
 
-private func populateMenu(_ menu: NSMenu, with items: [[String: Any]], windowId: Int) {
+func buildContextMenu(from descriptor: [[String: Any]], windowId: Int) -> NSMenu {
+    let menu = NSMenu()
+    populateMenu(menu, with: descriptor, windowId: windowId, isContextMenu: true)
+    return menu
+}
+
+private func populateMenu(_ menu: NSMenu, with items: [[String: Any]], windowId: Int, isContextMenu: Bool) {
     for item in items {
         if item["separator"] as? Bool == true {
             menu.addItem(.separator())
@@ -971,26 +1044,26 @@ private func populateMenu(_ menu: NSMenu, with items: [[String: Any]], windowId:
         let payload = item["payload"] as? String ?? "null"
         let enabled = item["enabled"] as? Bool   ?? true
 
-        let menuItem: NSMenuItem
-
-//        if !channel.isEmpty {
-            let target = MenuActionTarget(windowId: windowId, channel: channel, payload: payload, label: label)
-            menuActionTargets.append(target) 
-            menuItem = NSMenuItem(title: label, action: #selector(MenuActionTarget.fire(_:)), keyEquivalent: key)
-            menuItem.target = target
-  //      } else {
-            // No action — probably a parent with a submenu
-    //        menuItem = NSMenuItem(title: label, action: nil, keyEquivalent: key)
-      //  }
+        let target = PositronMenuTarget(
+            windowId: windowId, 
+            channel: channel, 
+            payload: payload, 
+            label: label, 
+            isContextMenu: isContextMenu
+        )
+        
+        // Use our subclass to guarantee the action target lives exactly as long as the item itself
+        let menuItem = PositronMenuItem(title: label, action: #selector(PositronMenuTarget.fire(_:)), keyEquivalent: key)
+        menuItem.retainedTarget = target
 
         if enabled == false {
-        menu.autoenablesItems = false
-        menuItem.isEnabled = enabled
+            menu.autoenablesItems = false
+            menuItem.isEnabled = enabled
         }
 
         if let subItems = item["items"] as? [[String: Any]], !subItems.isEmpty {
             let sub = NSMenu(title: label)
-            populateMenu(sub, with: subItems, windowId: windowId)
+            populateMenu(sub, with: subItems, windowId: windowId, isContextMenu: isContextMenu)
             menuItem.submenu = sub
         }
 

@@ -296,6 +296,15 @@ wv.CoreWebView2InitializationCompleted += (sender, e) =>
                     webView.CoreWebView2.Settings.AreDevToolsEnabled = !IsPackaged;
                     await webView.CoreWebView2.AddScriptToExecuteOnDocumentCreatedAsync(MakePreloadScript(windowId));
 
+            webView.CoreWebView2.ContextMenuRequested += (s, e) =>
+{
+    if (LayoutMap.TryGetValue(windowId, out var l) && l.ContextMenu != null)
+    {
+        e.Handled = true; 
+        l.ContextMenu.IsOpen = true; 
+    }
+};
+
                     // WebView → C# IPC routing
                     webView.CoreWebView2.WebMessageReceived += (s, e) =>
                     {
@@ -303,6 +312,30 @@ wv.CoreWebView2InitializationCompleted += (sender, e) =>
                     };
                     break;
                 }
+
+ case "setContextMenu":               
+    if (!LayoutMap.TryGetValue(windowId, out var layout)) break;
+    if (args.Count == 0)
+    {
+        error("setContextMenu — missing menu descriptor argument");
+        break;
+    }
+
+    // 1. Parse the JSON string sent from Node
+    var ctxDescriptor = JsonSerializer.Deserialize<JsonArray>(args[0]);
+    if (ctxDescriptor == null)
+    {
+        error("setContextMenu — invalid JSON descriptor");
+        break;
+    }
+
+    // 2. Build the context menu using our helper
+    var contextMenu = new ContextMenu();
+    PopulateMenu(contextMenu.Items, ctxDescriptor, windowId);
+    
+    // 3. Attach it to the layout
+    layout.ContextMenu = contextMenu;
+    break;
 
                 case "closeWindow":
                     if (WindowsMap.TryGetValue(windowId, out var winToClose))
@@ -663,51 +696,51 @@ case "forceCloseWindow":
 
                 var items = topLevel["items"]?.AsArray();
                 if (items != null)
-                    PopulateMenu(topItem, items, windowId);
+                    PopulateMenu(topItem.Items, items, windowId);
             }
 
             layout.Children.Insert(0, menu); // Push menu to top of layout
             MenuMap[windowId] = menu;
         }
 
-        private static void PopulateMenu(MenuItem parent, JsonArray items, int windowId)
+  private static void PopulateMenu(ItemCollection parentItems, JsonArray items, int windowId)
+{
+    foreach (var item in items)
+    {
+        if (item?["separator"]?.GetValue<bool>() == true)
         {
-            foreach (var item in items)
-            {
-                if (item?["separator"]?.GetValue<bool>() == true)
-                {
-                    parent.Items.Add(new Separator());
-                    continue;
-                }
-
-                var label   = item?["label"]?.ToString()            ?? "(untitled)";
-                var channel = item?["channel"]?.ToString()          ?? "";
-                var payload = item?["payload"]?.ToString()          ?? "null";
-                var enabled = item?["enabled"]?.GetValue<bool>()    ?? true;
-
-                var menuItem = new MenuItem { Header = label, IsEnabled = enabled };
-
-                if (!string.IsNullOrEmpty(channel))
-                {
-                    menuItem.Click += (s, e) =>
-                    {
-                        _ipcClient.Send(new IPCResponse
-                        {
-                            windowId = windowId,
-                            @event = "menu-action",
-                            data = new() { { "channel", channel }, { "payload", payload }, { "label", label } }
-                        });
-                    };
-                }
-
-                var subItems = item?["items"]?.AsArray();
-                if (subItems != null && subItems.Count > 0)
-                    PopulateMenu(menuItem, subItems, windowId);
-
-                parent.Items.Add(menuItem);
-            }
+            parentItems.Add(new Separator());
+            continue;
         }
 
+        var label   = item?["label"]?.ToString()            ?? "(untitled)";
+        var channel = item?["channel"]?.ToString()          ?? "";
+        var payload = item?["payload"]?.ToString()          ?? "null";
+        var enabled = item?["enabled"]?.GetValue<bool>()    ?? true;
+
+        var menuItem = new MenuItem { Header = label, IsEnabled = enabled };
+        if (!string.IsNullOrEmpty(channel))
+        {
+            menuItem.Click += (s, e) =>
+            {
+                _ipcClient.Send(new IPCResponse
+                {
+                    windowId = windowId,
+                    // Note: You can keep this as "menu-action" for both, or branch logic if needed
+                    @event = "menu-action", 
+                    data = new() { { "channel", channel }, { "payload", payload }, { "label", label } }
+                });
+            };
+        }
+
+        var subItems = item?["items"]?.AsArray();
+        if (subItems != null && subItems.Count > 0)
+            PopulateMenu(menuItem.Items, subItems, windowId);
+
+        parentItems.Add(menuItem);
+    }
+}
+  
         private static void RemoveMenu(int windowId)
         {
             if (MenuMap.TryGetValue(windowId, out var menu) && LayoutMap.TryGetValue(windowId, out var layout))

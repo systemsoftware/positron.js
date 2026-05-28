@@ -12,6 +12,7 @@ const crypto = require("crypto");
 const { info, error, warn, success } = require("./logs");
 
 let currMenu = []
+let contextMenu = [];
 
 const randomPort = () => {
   const min = 1024;
@@ -152,7 +153,7 @@ ws.on("message", raw => {
           win.destroy();
         }
       }
-      } else if(msg.event == "menu-action") {
+      } else if(msg.event == "menu-action" || msg.event == "context-menu-action") {
        
             const findMenuAction = (items, label, channel) => {
       if (!items || items.length === 0) return null;
@@ -171,7 +172,7 @@ ws.on("message", raw => {
       return null; 
     }
         
-        const menuAction = findMenuAction(currMenu, msg.data.label, msg.data.channel);
+        const menuAction = findMenuAction((msg.event === "menu-action" ? currMenu : contextMenu), msg.data.label, msg.data.channel);
         
         if (menuAction) {
           menuAction.click();
@@ -614,6 +615,29 @@ setMinimizable(isMinimizable) {
 setBounds(x, y, width, height) {
   this.sendCommand("setBounds", [x, y, width, height]);
   this.emit("bounds-updated", { x, y, width, height });
+}
+
+setContextMenu(menuTemplate) {
+
+  if(menuTemplate instanceof Menu) {
+    menuTemplate = menuTemplate.template;
+  }
+
+  const stripClick = (items) => {
+    if (!items) return null;
+    return items.map(i => {
+      const newItem = { ...i, click: undefined };
+      if (newItem.items) {
+        newItem.items = stripClick(newItem.items);
+      }
+      return newItem;
+    });
+  };
+
+  contextMenu = menuTemplate;
+
+  this.sendCommand("setContextMenu", [JSON.stringify(stripClick(menuTemplate))]);
+  this.emit("context-menu-updated", menuTemplate);
 }
 
 /**
