@@ -133,7 +133,22 @@ ws.on("message", raw => {
       };
       
       ipc.dispatch(ws, simulatedMsg);
-    } else {
+    } else if (msg.event === "window-close-requested") {
+      const win = [...activeWindows].find(w => w.id === msg.windowId);
+      if (win) {
+        let defaultPrevented = false;
+        
+        const eventObject = {
+          preventDefault: () => { defaultPrevented = true; }
+        };
+
+        win.emit("close", eventObject);
+
+        if (!defaultPrevented) {
+          win.destroy();
+        }
+      }
+      }  else {
       appEvents.emit(msg.event, msg.data);
     }
   } catch (err) {
@@ -259,11 +274,15 @@ create(width, height, darwinOptions = {
     this.emit("created");
 }
 
-close() {
-  this.#created = false;
-  this.emit("close");
-  this.sendCommand("closeWindow");
-}
+  close() {
+    this.sendCommand("triggerCloseSequence"); 
+  }
+
+  destroy() {
+    this.#created = false;
+    activeWindows.delete(this);
+    this.sendCommand("forceCloseWindow");
+  }
 
 setMenu(menuTemplate) {
   if(menuTemplate instanceof Menu) {
@@ -439,7 +458,21 @@ const app = {
 
   quit(exitCode = 0) {
     this.events.emit("before-quit");
-    process.exit(exitCode);
+ const payload = JSON.stringify({ 
+      windowId: 1, 
+      command: "terminate",
+      args: []
+    });
+
+    if (activeSocket && activeSocket.readyState === WebSocket.OPEN) {
+      activeSocket.send(payload);
+    }
+
+    setTimeout(() => {
+      process.exit(exitCode);
+    }, 20);
+
+    appEvents.emit("quit");
   },
 
   events: appEvents

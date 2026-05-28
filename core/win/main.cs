@@ -236,6 +236,29 @@ namespace PositronWindows
                     DockPanel.SetDock(webView, Dock.Bottom);
                     window.Content = dockPanel;
 
+window.Closing += (s, cancelArgs) =>
+{
+    cancelArgs.Cancel = true; 
+
+    _ipcClient.Send(new IPCResponse 
+    { 
+        windowId = windowId, 
+        @event = "window-close-requested" 
+    });
+};
+
+window.Closed += (s, e) =>
+{
+    WindowsMap.Remove(windowId);
+    LayoutMap.Remove(windowId);
+    MenuMap.Remove(windowId);
+
+    _ipcClient.Send(new IPCResponse { windowId = windowId, @event = "windowClosed" });
+
+    if (WindowsMap.Count == 0)
+        Application.Current.Shutdown();
+};
+
 
                     var wv = new WebView2();
 
@@ -287,6 +310,31 @@ wv.CoreWebView2InitializationCompleted += (sender, e) =>
                     else
                         error($"closeWindow — no window found with ID {windowId}");
                     break;
+
+                case "terminate":
+                    try { Current.Shutdown(); } catch { }
+                    break;
+
+                    case "triggerCloseSequence":
+    if (WindowsMap.TryGetValue(windowId, out var winTrigger))
+    {
+        // This fires the window.Closing event handler we set up above
+        winTrigger.Close(); 
+    }
+    break;
+
+case "forceCloseWindow":
+    if (WindowsMap.TryGetValue(windowId, out var winForce))
+    {
+        winForce.Closing -= (s, e) => { e.Cancel = true; };
+        
+        winForce.Close(); 
+    }
+    else
+    {
+        error($"forceCloseWindow — no window found with ID {windowId}");
+    }
+    break;
 
                 case "setTitle":
                     if (!WindowsMap.TryGetValue(windowId, out var winTitle)) break;
@@ -646,7 +694,7 @@ wv.CoreWebView2InitializationCompleted += (sender, e) =>
                         _ipcClient.Send(new IPCResponse
                         {
                             windowId = windowId,
-                            @event = "menuAction",
+                            @event = "menu-action",
                             data = new() { { "channel", channel }, { "payload", payload } }
                         });
                     };

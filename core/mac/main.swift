@@ -159,6 +159,17 @@ struct IPCResponse: Codable {
 }
 
 
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        guard let windowId = windows.first(where: { $0.value == sender })?.key else {
+            return true
+        }
+        self.ipcClient.send(
+            IPCResponse(windowId: windowId, event: "window-close-requested", data: [:])
+        )
+
+        return false
+    }
+
 // MARK: - Command Handler
 
 func handleCommand(windowId: Int, command: String, args: [String]) {
@@ -243,12 +254,20 @@ func handleCommand(windowId: Int, command: String, args: [String]) {
 
          windowObservations[windowId] = observation
 
-    case "closeWindow":
-        guard let window = windows[windowId] else {
-            printError("closeWindow — no window with ID \(windowId)")
-            return
-        }
-        window.close() // Triggers willCloseNotification → cleanup above
+  case "triggerCloseSequence":
+    guard let window = windows[windowId] else { return }
+
+    window.performClose(nil) 
+
+case "forceCloseWindow":
+    guard let window = windows[windowId] else { return }
+
+    window.delegate = nil 
+    window.close()
+    windows.removeValue(forKey: windowId)
+
+    case "terminate":
+        NSApp.terminate(nil)
 
     case "setTitle":
         guard let window = windows[windowId] else { return }
@@ -406,6 +425,15 @@ func handleCommand(windowId: Int, command: String, args: [String]) {
                 )
 
             case "showNotification":
+
+UNUserNotificationCenter.current().requestAuthorization(
+    options: [.alert, .sound, .badge]
+) { granted, error in
+    if let error {
+        print(error)
+    }
+}
+
                 guard let title = args.first else {
                     printError("showNotification — missing title argument")
                     return
@@ -878,7 +906,7 @@ final class MenuActionTarget: NSObject {
         AppDelegate.shared?.ipcClient.send(
             IPCResponse(
                 windowId: windowId,
-                event: "menuAction",
+                event: "menu-action",
                 data: ["channel": channel, "payload": payload]
             )
         )
