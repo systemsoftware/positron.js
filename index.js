@@ -11,13 +11,22 @@ const http = require("http");
 const crypto = require("crypto");
 const { info, error, warn, success } = require("./logs");
 
-const PORT = process.env.POSITRON_IPC_PORT || 9000;
+const randomPort = () => {
+  const min = 1024;
+  const max = 65535;
+  return Math.floor(Math.random() * (max - min + 1)) + min;
+}
+
+const PORT = process.env.POSITRON_IPC_PORT || randomPort();
 const HOST = "127.0.0.1";
 
 if (!process.env.POSITRON_AUTH_TOKEN) {
     process.env.POSITRON_AUTH_TOKEN = crypto.randomUUID();
 }
 
+if(!process.env.POSITRON_IPC_PORT) {
+    process.env.POSITRON_IPC_PORT = PORT;
+}
 const appRoot = process.cwd();
 const binaryName = process.platform === "win32" ? "positron-runtime.exe" : "positron-runtime";
 const binaryPath = path.join(appRoot, "bin", binaryName);

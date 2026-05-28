@@ -23,6 +23,11 @@ var windowObservations: [Int: NSKeyValueObservation] = [:]
 import Foundation
 
 func getRandomOpenPort() -> UInt16? {
+
+        if let envPort = ProcessInfo.processInfo.environment["POSITRON_IPC_PORT"], let portNum = UInt16(envPort) {
+            return portNum
+        }
+
     // 1. Create a TCP socket
     let socketFileDescriptor = socket(AF_INET, SOCK_STREAM, 0)
     if socketFileDescriptor == -1 { return nil }
@@ -759,7 +764,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         
         if Bundle.main.bundlePath.hasSuffix(".app") {
             startNodeProcess()
-        } 
+        }  
 
         ipcClient = IPCClient()
         ipcClient.connect()
@@ -955,13 +960,13 @@ setbuf(__stdoutp, nil)
 setbuf(__stderrp, nil)
 
 signal(SIGINT) { _ in
-    printError("Received SIGINT, shutting down…")
+    printError("INFO: Received SIGINT, shutting down…")
     AppDelegate.shared?.nodeProcess?.terminate()
     exit(0)
 }
 
 signal(SIGTERM) { _ in
-    printError("Received SIGTERM, shutting down…")
+    printError("INFO: Received SIGTERM, shutting down…")
     AppDelegate.shared?.nodeProcess?.terminate()
     exit(0)
 } 

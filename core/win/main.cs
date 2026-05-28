@@ -145,6 +145,7 @@ namespace PositronWindows
             {
                 try { Current.Shutdown(); } catch { }
                 try { _nodeProcess?.Kill(); } catch { }
+                error("INFO: Received SIGINT, shutting down…");
             };
             
             AppDomain.CurrentDomain.ProcessExit += (sender, e) =>
@@ -153,6 +154,7 @@ namespace PositronWindows
                 {
                     try { Current.Shutdown(); } catch { }
                     try { _nodeProcess?.Kill(); } catch { }
+                    error("INFO: Process exiting, shutting down…");
                 });
             };
 
