@@ -1,5 +1,11 @@
 const { execSync } = require('child_process');
 
+/**
+ * Gets the screen size of the primary display. The implementation varies based on the operating system:
+ * - On Windows, it uses PowerShell to query the current horizontal and vertical resolution of the video controller.
+ * - On macOS, it uses the system_profiler command to extract the resolution information from the display data.
+ * If the platform is not supported or if there is an error during execution, it returns a default size of { width: 0, height: 0 }.
+ */
 function getScreenSize() {
   const platform = process.platform;
 

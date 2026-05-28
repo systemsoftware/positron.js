@@ -1013,6 +1013,13 @@ signal(SIGTERM) { _ in
     exit(0)
 } 
 
+signal(SIGSEGV) { _ in
+    printError("ERROR: Caught SIGSEGV (segmentation fault). This likely indicates a bug in the native code. Attempting to shut down gracefully…")
+    AppDelegate.shared?.nodeProcess?.terminate()
+    signal(SIGSEGV, SIG_DFL)
+    raise(SIGSEGV)
+}
+
 let app = NSApplication.shared
 let delegate = AppDelegate()
 app.delegate = delegate

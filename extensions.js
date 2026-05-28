@@ -2,7 +2,13 @@ const fs = require("fs");
 const path = require("path");
 const { info } = require("./logs");
 
+
 class PositronRegistry {
+
+  /**
+ * PositronRegistry is responsible for discovering native extensions in a Positron application. 
+ * @internal
+ */
   constructor(appRoot) {
     this.appRoot = appRoot; 
     this.nativeExtensions = [];

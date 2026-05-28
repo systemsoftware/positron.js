@@ -197,6 +197,8 @@ const ipc = new IpcRouter();
 let _windowCounter = 0;
 
 class Window extends Events.EventEmitter {
+
+  /** Creates a new window instance. */
   constructor(options = {
 
     darwinOptions: {
@@ -227,6 +229,13 @@ class Window extends Events.EventEmitter {
 
   }
 
+  /**
+   * Send a fire-and-forget command to the native layer. Commands are simple strings that correspond to actions the native layer can perform.
+   * Args can be provided as an array or a single value, and will be normalized to an array of strings before being sent.
+   * If the socket connection is not currently open, the command will be queued and sent once the connection is established.
+   * @param {string} command 
+   * @param {string[]} args 
+   */
   sendCommand(command, args = []) {
     const normalizedArgs = Array.isArray(args) ? args.map(String) : [String(args)];
     
@@ -245,21 +254,40 @@ class Window extends Events.EventEmitter {
     }
   }
 
+  /**
+   * Sets the title of the window.
+   * @param {string} title The new title for the window.
+   */
   setTitle(title) { 
     this.sendCommand("setTitle", [title]); 
     this.emit("title-updated", title); 
   }
+
+  /**
+   * Loads a remote URL in the window. Emits "url-loaded" and "navigated" events with the URL as data.
+   * @param {string} url The URL to load.
+   */
   loadURL(url) { 
     this.sendCommand("loadURL", [url]); 
     this.emit("url-loaded", url); 
     this.emit("navigated", url); 
   }
+
+  /**
+   * Loads a local file in the window. Emits "file-loaded" and "navigated" events with the file path as data.
+   * @param {string} path The path to the file to load.
+   */
   loadFile(path) { 
     this.sendCommand("loadFile", [path]); 
     this.emit("file-loaded", path); 
     this.emit("navigated", path); 
   }
 
+  /**
+   * Sends an IPC message to the renderer process.
+   * @param {string} channel The IPC channel to send the message on.
+   * @param {string[]} args The arguments to send with the message.
+   */
 sendIpc(channel, args = []) {
   if (activeSocket && activeSocket.readyState === WebSocket.OPEN) {
     const payload = JSON.stringify({
@@ -276,6 +304,13 @@ sendIpc(channel, args = []) {
 
  #created = false;
 
+ /**
+  * Creates the window in the native layer.
+  * @param {string} width 
+  * @param {string} height 
+  * @param {Object} darwinOptions 
+  * @returns 
+  */
 create(width, height, darwinOptions = {
   closable: true,
   resizable: true,
@@ -304,10 +339,16 @@ create(width, height, darwinOptions = {
     this.emit("created");
 }
 
+/**
+ * Closes the window by triggering the native close sequence. This allows the "close" event to be emitted and gives the app a chance to prevent the close if needed. If you want to force close without emitting "close", use the destroy() method instead.
+ */
   close() {
     this.sendCommand("triggerCloseSequence"); 
   }
 
+  /**
+   * Immediately destroys the window without emitting "close" or allowing prevention. This should be used with caution, as it can lead to unsaved state or other issues if the app is not prepared for it.
+   */
   destroy() {
     this.#created = false;
     activeWindows.delete(this);
@@ -315,6 +356,10 @@ create(width, height, darwinOptions = {
   }
 
 
+  /**
+   * Sets the application menu for this window.
+   * @param {Menu} menuTemplate
+   */
 setMenu(menuTemplate) {
   if(menuTemplate instanceof Menu) {
     menuTemplate = menuTemplate.template;
@@ -337,22 +382,37 @@ setMenu(menuTemplate) {
   this.emit("menu-updated", menuTemplate);
 }
 
+/**
+ * Clears the application menu for this window.
+ */
 resetMenu() {
   this.sendCommand("resetMenu");
   currMenu = [];
   this.emit("menu-updated", null);
 }
 
+/** 
+ * Displays an alert dialog with the given message. Emits an "alert" event with the message as data.
+ * @param {string} message The message to display in the alert dialog.
+ */
 alert(message) {
   this.sendCommand("alert", [message]);
   this.emit("alert", message);
 }
 
+/**
+ * Adds a user script to the window.
+ * @param {string} script The script to add.
+ */
 addUserScript(script) {
   this.sendCommand("addUserScript", [script]);
   this.emit("user-script-added", { content: script, filePath: null });
 }
 
+/**
+ * Adds a user script from a file.
+ * @param {string} filePath The path to the script file.
+ */
 addUserScriptFromFile(filePath) {
   fs.readFile(filePath, "utf-8", (err, data) => {
     if (err) {
@@ -364,72 +424,124 @@ addUserScriptFromFile(filePath) {
   });
 }
 
+/**
+ * Resizes the window to the specified dimensions.
+ * @param {number} width The new width of the window.
+ * @param {number} height The new height of the window.
+ */
 resize(width, height) {
   this.sendCommand("resizeWindow", [width, height]);
   this.emit("resized", { width, height });
 }
 
+/**
+ * Opens the developer tools for the window. Emits a "devtools-opened" event when done. Does not work on macOS. For macOS, right-click the window and select "Inspect Element" to open dev tools for that window.
+ */
 openDevTools() {
+  if(process.platform === "darwin") {
+    warn("The openDevTools command is not supported on macOS due to OS limitations. Please right-click the window and select 'Inspect Element' to access developer tools.");
+    return;
+  }
   this.sendCommand("openDevTools");
   this.emit("devtools-opened");
 }
 
+/**
+ * Toggles fullscreen mode for the window. Emits a "fullscreen-toggled" event when done.
+ */
 toggleFullscreen() {
   this.sendCommand("toggleFullscreen");
   this.emit("fullscreen-toggled");
 }
 
+/**
+ * Enters fullscreen mode for the window. Emits a "fullscreen-entered" event when done.
+ */
 goFullscreen() {
   this.sendCommand("fullscreen");
   this.emit("fullscreen-entered");
 }
 
+/**
+ * Exits fullscreen mode for the window. Emits a "fullscreen-exited" event when done.
+ */
 exitFullscreen() {
   this.sendCommand("exitFullscreen");
   this.emit("fullscreen-exited");
 }
 
-
+/**
+ * Navigates forward in the window's history. Emits a "navigated-forward" event when done.
+ */
 goForward() {
   this.sendCommand("forward");
   this.emit("navigated-forward");
 }
 
+/**
+ * Navigates back in the window's history. Emits a "navigated-back" event when done.
+ */
 goBack() {
   this.sendCommand("back");
   this.emit("navigated-back");
 }
 
+/**
+ * Hides the window. Emits a "hidden" event when done.
+ */
 hide() {
   this.sendCommand("hideWindow");
   this.emit("hidden");
 }
 
+/**
+ * Shows the window. Emits a "shown" event when done.
+ */
 show() {
   this.sendCommand("showWindow");
   this.emit("shown");
 }
 
+/**
+ * Focuses the window. Emits a "focused" event when done.
+ */
 focus() {
   this.sendCommand("focus");
   this.emit("focused");
 }
 
+/**
+ * Reloads the window. Emits a "reloaded" event when done.
+ */
 reload() {
   this.sendCommand("reload");
   this.emit("reloaded");
 }
 
+/**
+ * Captures a screenshot of the current window. Returns a Promise that resolves to a Buffer containing the image data in PNG format, or null if the capture failed. Emits a "screenshot-captured" event with the image buffer as data when done.
+ * @returns {Promise<Buffer|null>} The captured screenshot as a Buffer, or null if the capture failed.
+ */
 async capturePage() {
  const response = await this.request("capturePage", `capture-page-result-${this.id}`);
  return response.image ? Buffer.from(response.image, "base64") : null;
 }
 
+/**
+ * Checks if the window can navigate back in its history. Returns a Promise that resolves to true if it can go back, or false if it cannot. Emits a "can-go-back-checked" event with the result as data when done.
+ * @returns {Promise<boolean>} True if the window can navigate back, false otherwise.
+ */
 async canGoBack() {
  const response = await this.request("canGoBack", `canGoBack-reply-${this.id}`);
  return response === "true";
 }
 
+/**
+ * Sends a request/response command to the native layer. The command will be sent, and the method will wait for a response on the specified reply channel. Once a response is received, the promise will resolve with the reply data.
+ * @param {*} command The command to send.
+ * @param {*} replyChannel The channel to listen for the reply on.
+ * @returns {Promise<*>} A promise that resolves to the reply data.
+ */
 async request(command, replyChannel) {
   return new Promise((resolve) => {
     const unsubscribe = ipc.handle(replyChannel, (data) => {
@@ -441,58 +553,116 @@ async request(command, replyChannel) {
   });
 }
 
+/**
+ * Checks if the window can navigate forward in its history. Returns a Promise that resolves to true if it can go forward, or false if it cannot. Emits a "can-go-forward-checked" event with the result as data when done.
+ * @returns {Promise<boolean>} True if the window can navigate forward, false otherwise.
+ */
 async canGoForward() {
   const response = await this.request("canGoForward", `canGoForward-reply-${this.id}`);
   return response === "true";
 }
 
+/**
+ * Shows a notification. Emits a "notification-shown" event when done.
+ * @param {string} title The title of the notification.
+ * @param {string} body The body of the notification.
+ * @param {Object} options The options for the notification.
+ */
 showNotification(title, body, options = {}) {
+  if(!isPackaged) {
+    warn("Notifications do not work in development mode due to limitations of the OS notification APIs. This command will be a no-op until the app is packaged.");
+    return;
+  }
   this.sendCommand("showNotification", [title, body, JSON.stringify(options)]);
   this.emit("notification-shown", { title, body, options });
 }
 
+/**
+ * Sets whether the window is closeable. Emits a "closeable-updated" event with the new value when done.
+ * @param {*} isClosable Whether the window is closeable.
+ */
 setCloseable(isClosable) {
   this.sendCommand("setCloseable", [String(isClosable)]);
   this.emit("closeable-updated", isClosable);
 }
 
+/** 
+ * Sets whether the window is resizable. Emits a "resizable-updated" event with the new value when done.
+ * @param {*} isResizable Whether the window is resizable.
+ */
 setResizable(isResizable) {
   this.sendCommand("setResizable", [String(isResizable)]);
   this.emit("resizable-updated", isResizable);
 }
 
+/** 
+ * Sets whether the window is minimizable. Emits a "minimizable-updated" event with the new value when done.
+ * @param {*} isMinimizable Whether the window is minimizable.
+ */
 setMinimizable(isMinimizable) {
   this.sendCommand("setMinimizable", [String(isMinimizable)]);
   this.emit("minimizable-updated", isMinimizable);
 }
 
+/** 
+ * Sets the bounds of the window. Emits a "bounds-updated" event with the new bounds when done.
+ * @param {number} x The x-coordinate of the window's position.
+ * @param {number} y The y-coordinate of the window's position.
+ * @param {number} width The width of the window.
+ * @param {number} height The height of the window.
+ */
 setBounds(x, y, width, height) {
   this.sendCommand("setBounds", [x, y, width, height]);
   this.emit("bounds-updated", { x, y, width, height });
 }
 
+/**
+ * Gets the current bounds of the window. Returns a Promise that resolves to an object containing the x and y coordinates of the window's position, as well as its width and height. Emits a "bounds-retrieved" event with the bounds data when done.
+ * @returns {Promise<{x: number, y: number, width: number, height: number}>} An object containing the window's bounds.
+ */
 async getBounds() {
   return await this.request("getBounds", `getBounds-reply-${this.id}`);
 }
 
+/**
+ * Gets the current URL loaded in the window. Returns a Promise that resolves to the URL as a string. Emits a "url-retrieved" event with the URL data when done.
+ * @returns {Promise<string>} The current URL loaded in the window.
+ */
 async getURL() {
   return await this.request("getURL", `getURL-reply-${this.id}`);
 }
 
+/**
+ * Gets the current title of the window. Returns a Promise that resolves to the title as a string. Emits a "title-retrieved" event with the title data when done.
+ * @returns {Promise<string>} The current title of the window.
+ */
 async getTitle() {
   return await this.request("getTitle", `getTitle-reply-${this.id}`);
 }
 
+/**
+ * Sets whether the window's titlebar is visible. Emits a "titlebar-visibility-updated" event with the new value when done.
+ * @param {boolean} isVisible Whether the titlebar is visible.
+ */
 setTitlebarVisible(isVisible) {
   this.sendCommand("setTitlebarVisible", [String(isVisible)]);
   this.emit("titlebar-visibility-updated", isVisible);
 }
 
+/**
+ * Sets whether the window's titlebar is transparent. Emits a "titlebar-transparency-updated" event with the new value when done.
+ * @param {boolean} isTransparent Whether the titlebar is transparent.
+ */
 setTitlebarTransparent(isTransparent) {
   this.sendCommand("setTitlebarTransparent", [String(isTransparent)]);
   this.emit("titlebar-transparency-updated", isTransparent);
 }
 
+/**
+ * Evaluates JavaScript code in the context of the window. Returns a Promise that resolves to the result of the evaluation. Emits a "js-evaluated" event with the result data when done.
+ * @param {string} script The JavaScript code to evaluate.
+ * @returns {Promise<*>} A Promise that resolves to the result of the evaluation.
+ */
 async evaluateJavaScript(script) {
 const res = await this.request("evaluateJS", `evaluateJS-reply-${this.id}`);
 return res;
@@ -502,6 +672,10 @@ return res;
 
 const app = {
 
+  /**
+   * Quits the application by sending a terminate command to the native layer and then exiting the process. Emits a "before-quit" event before sending the command, and a "quit" event after initiating the quit sequence.
+   * @param {number} exitCode The exit code for the process.
+   */
   quit(exitCode = 0) {
     this.events.emit("before-quit");
  const payload = JSON.stringify({ 
@@ -521,6 +695,36 @@ const app = {
     appEvents.emit("quit");
   },
 
+  /**
+   * Adds an event listener for application-level events. Supported events include "before-quit" and "quit".
+   * @param {string} event The name of the event to listen for.
+   * @param {Function} listener The callback function to invoke when the event is emitted.
+   */
+  on(event, listener) {
+    this.events.on(event, listener);
+  },
+  
+  /**
+   * Removes an event listener for application-level events.
+   * @param {string} event The name of the event to remove the listener from.
+   * @param {Function} listener The callback function to remove.
+   */
+  off(event, listener) {
+    this.events.off(event, listener);
+  },
+
+  /**
+   * Adds a one-time event listener for application-level events. The listener will be invoked at most once for the specified event, and then automatically removed.
+   * @param {string} event The name of the event to listen for.
+   * @param {Function} listener The callback function to invoke when the event is emitted.
+   */
+  once(event, listener) {
+    this.events.once(event, listener);
+  },
+
+  /**
+   * Full access to the underlying event emitter for application-level events, allowing for advanced event handling patterns if needed.
+   */
   events: appEvents
   
 }
