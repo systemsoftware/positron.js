@@ -1,10 +1,12 @@
 class MenuItem {
-    constructor({ label="", channel="", payload={}, key="", items=[], separator=false }) {
+    constructor({ label="", channel="", payload={}, key="", items=[], separator=false, click=()=>{}, enabled=true }) {
         this.label = label;
         this.channel = channel;
         this.payload = JSON.stringify(payload);
         this.key = key;
         this.items = items ? items.map(i => new MenuItem(i)) : null;
+        this.enabled = enabled;
+        this.click = click;
         this.separator = separator || false;
     }
 
@@ -15,12 +17,21 @@ class MenuItem {
             payload: this.payload,
             key: this.key,
             items: this.items ? this.items.map(i => i.json()) : null,
-            separator: this.separator
+            separator: this.separator,
+            enabled: this.enabled,
+            click: this.click
         }
     }
 }
 
-module.exports.Menu = class {
+class Separator extends MenuItem {
+    constructor() {
+        super({ separator: true });
+    }
+}
+
+
+ class Menu {
 
     #template = []
 
@@ -36,6 +47,16 @@ addItem(item = new MenuItem()) {
 this.#template.push(item.json());
 return this;
 }
+
+addItems(items = []) {
+items.forEach(item => this.addItem(item));
+return this;
 }
 
-module.exports.MenuItem = MenuItem;
+}
+
+module.exports = {
+    Menu,
+    MenuItem,
+    Separator
+}

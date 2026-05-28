@@ -895,11 +895,13 @@ final class MenuActionTarget: NSObject {
     let windowId: Int
     let channel: String   // arbitrary string the JS side chooses
     let payload: String   // JSON string forwarded verbatim
+    let label: String?     // for debugging
 
-    init(windowId: Int, channel: String, payload: String) {
+    init(windowId: Int, channel: String, payload: String, label: String?) {
         self.windowId = windowId
         self.channel  = channel
         self.payload  = payload
+        self.label = label
     }
 
     @objc func fire(_ sender: Any?) {
@@ -907,7 +909,7 @@ final class MenuActionTarget: NSObject {
             IPCResponse(
                 windowId: windowId,
                 event: "menu-action",
-                data: ["channel": channel, "payload": payload]
+                data: ["channel": channel, "payload": payload, "label": label ?? "label"]
             )
         )
     }
@@ -960,19 +962,24 @@ private func populateMenu(_ menu: NSMenu, with items: [[String: Any]], windowId:
         let payload = item["payload"] as? String ?? "null"
         let enabled = item["enabled"] as? Bool   ?? true
 
+        print("Adding menu item: \(label) (channel: \(channel), payload: \(payload), key: \(key)), enabled: \(enabled)")
+
         let menuItem: NSMenuItem
 
-        if !channel.isEmpty {
-            let target = MenuActionTarget(windowId: windowId, channel: channel, payload: payload)
-            menuActionTargets.append(target)   // retain it
+//        if !channel.isEmpty {
+            let target = MenuActionTarget(windowId: windowId, channel: channel, payload: payload, label: label)
+            menuActionTargets.append(target) 
             menuItem = NSMenuItem(title: label, action: #selector(MenuActionTarget.fire(_:)), keyEquivalent: key)
             menuItem.target = target
-        } else {
+  //      } else {
             // No action — probably a parent with a submenu
-            menuItem = NSMenuItem(title: label, action: nil, keyEquivalent: key)
-        }
+    //        menuItem = NSMenuItem(title: label, action: nil, keyEquivalent: key)
+      //  }
 
+        if enabled == false {
+        menu.autoenablesItems = false
         menuItem.isEnabled = enabled
+        }
 
         if let subItems = item["items"] as? [[String: Any]], !subItems.isEmpty {
             let sub = NSMenu(title: label)

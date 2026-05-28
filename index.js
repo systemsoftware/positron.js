@@ -11,6 +11,8 @@ const http = require("http");
 const crypto = require("crypto");
 const { info, error, warn, success } = require("./logs");
 
+let currMenu = []
+
 const randomPort = () => {
   const min = 1024;
   const max = 65535;
@@ -121,6 +123,8 @@ ws.on("message", raw => {
   try {
     const msg = JSON.parse(raw);
 
+   if(process.env.POSITRON_LOG_IPC) console.log("Received IPC message:", msg);
+
     if (msg.event === "ipcMessage" || msg.event.includes("-reply-") || msg.event.includes("-result-")) {
       
       const simulatedMsg = msg.event === "ipcMessage" ? msg : {
@@ -148,7 +152,33 @@ ws.on("message", raw => {
           win.destroy();
         }
       }
-      }  else {
+      } else if(msg.event == "menu-action") {
+       
+            const findMenuAction = (items, label, channel) => {
+      if (!items || items.length === 0) return null;
+
+      for (const item of items) {
+        if (item.label === label || (channel && item.channel === channel)) {
+          return item;
+        }
+        
+        if (item.items && item.items.length > 0) {
+          const found = findMenuAction(item.items, label, channel);
+          if (found) return found; 
+        }
+      }
+      
+      return null; 
+    }
+        
+        const menuAction = findMenuAction(currMenu, msg.data.label, msg.data.channel);
+        
+        if (menuAction) {
+          menuAction.click();
+        } else {
+          warn("Received menu action for unknown item:", msg.data);
+        }
+      } else {
       appEvents.emit(msg.event, msg.data);
     }
   } catch (err) {
@@ -284,16 +314,32 @@ create(width, height, darwinOptions = {
     this.sendCommand("forceCloseWindow");
   }
 
+
 setMenu(menuTemplate) {
   if(menuTemplate instanceof Menu) {
     menuTemplate = menuTemplate.template;
   } 
-  this.sendCommand("setMenu", [JSON.stringify(menuTemplate)]);
+  
+  currMenu = menuTemplate;
+
+  const stripClick = (items) => {
+    if (!items) return null;
+    return items.map(i => {
+      const newItem = { ...i, click: undefined };
+      if (newItem.items) {
+        newItem.items = stripClick(newItem.items);
+      }
+      return newItem;
+    });
+  };
+
+  this.sendCommand("setMenu", [JSON.stringify(stripClick(menuTemplate))]);
   this.emit("menu-updated", menuTemplate);
 }
 
 resetMenu() {
   this.sendCommand("resetMenu");
+  currMenu = [];
   this.emit("menu-updated", null);
 }
 

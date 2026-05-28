@@ -695,7 +695,7 @@ case "forceCloseWindow":
                         {
                             windowId = windowId,
                             @event = "menu-action",
-                            data = new() { { "channel", channel }, { "payload", payload } }
+                            data = new() { { "channel", channel }, { "payload", payload }, { "label", label } }
                         });
                     };
                 }
