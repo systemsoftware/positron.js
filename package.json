@@ -12,6 +12,7 @@
   "license": "MIT",
   "type": "commonjs",
   "dependencies": {
+    "extract-zip": "^2.0.1",
     "javascript-obfuscator": "^5.4.2",
     "nan": "^2.27.0",
     "resedit": "^3.0.2",

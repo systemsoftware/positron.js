@@ -89,7 +89,7 @@ const commandQueue = [];
 _ipcWS.on("connection", (ws, req) => {
 const clientToken = req.headers["x-positron-auth-token"];
 
-  if (EXPECTED_TOKEN && clientToken !== EXPECTED_TOKEN) {
+  if (clientToken !== EXPECTED_TOKEN) {
     warn("[Security] Unauthorized local connection attempt rejected. Token:", clientToken, "Expected:", EXPECTED_TOKEN);
     ws.close(4001, "Unauthorized token match failure.");
     return;
@@ -437,7 +437,7 @@ const app = {
   
 }
 
-module.exports = { Window, ipc, isPackaged, app };
+module.exports = { Window, ipc, isPackaged, app, PORT, };
 
 httpServer.listen(PORT, HOST, () => {
 info("IPC server running on " + HOST + ":" + PORT);

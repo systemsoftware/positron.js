@@ -20,6 +20,53 @@ let AUTH_TOKEN: String = {
 var windowObservations: [Int: NSKeyValueObservation] = [:]
 
 
+import Foundation
+
+func getRandomOpenPort() -> UInt16? {
+    // 1. Create a TCP socket
+    let socketFileDescriptor = socket(AF_INET, SOCK_STREAM, 0)
+    if socketFileDescriptor == -1 { return nil }
+    
+    // 2. Set up the address structure, binding to port 0
+    var address = sockaddr_in()
+    address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+    address.sin_family = sa_family_t(AF_INET)
+    address.sin_port = 0 // Port 0 tells the OS to pick one
+    address.sin_addr.s_addr = INADDR_ANY
+    
+    // 3. Bind the socket
+    let bindResult = withUnsafePointer(to: &address) {
+        $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+            bind(socketFileDescriptor, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+        }
+    }
+    
+    if bindResult == -1 {
+        close(socketFileDescriptor)
+        return nil
+    }
+    
+    // 4. Retrieve the port assigned by the OS
+    var assignedAddress = sockaddr_in()
+    var addressLength = socklen_t(MemoryLayout<sockaddr_in>.size)
+    let getsockNameResult = withUnsafeMutablePointer(to: &assignedAddress) {
+        $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+            getsockname(socketFileDescriptor, $0, &addressLength)
+        }
+    }
+    
+    // 5. Clean up and return the port
+    close(socketFileDescriptor)
+    
+    if getsockNameResult == 0 {
+        return assignedAddress.sin_port.bigEndian
+    }
+    
+    return nil
+}
+
+let port = getRandomOpenPort()
+
 func printError(_ message: String) {
     var msg = message
     var red = "\u{001B}[0;31m"
@@ -617,7 +664,7 @@ final class IPCClient {
     private let reconnectDelay: TimeInterval = 2.0
 
     init(serverURL: URL = URL(string: "ws://localhost:9000")!) {
-        let POSITRON_IPC_PORT = ProcessInfo.processInfo.environment["POSITRON_IPC_PORT"] ?? "9000"
+        let POSITRON_IPC_PORT = port ?? 9000
         self.serverURL = URL(string: "ws://localhost:\(POSITRON_IPC_PORT)")!
         self.authToken = AUTH_TOKEN
     }
@@ -655,7 +702,7 @@ final class IPCClient {
             guard let self else { return }
             switch result {
             case .failure(let error):
-                printError("WebSocket error: \(error.localizedDescription)")
+                printError("WebSocket error: \(error.localizedDescription).")
                 self.scheduleReconnect()
             case .success(let message):
                 switch message {
@@ -691,7 +738,7 @@ final class IPCClient {
             printError("Exceeded maximum reconnect attempts (\(maxReconnectAttempts)). Giving up.")
             return
         }
-        printError("Reconnecting in \(reconnectDelay)s… (attempt \(reconnectAttempts)/\(maxReconnectAttempts))")
+        printError("Reconnecting to \(serverURL) in \(reconnectDelay)s… (attempt \(reconnectAttempts)/\(maxReconnectAttempts))")
         DispatchQueue.global().asyncAfter(deadline: .now() + reconnectDelay) { [weak self] in
             self?.connect()
         }
@@ -719,7 +766,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         setupDefaultMenu()
     }
-    
+
+
     func startNodeProcess() {
         guard let resourcePath = Bundle.main.resourcePath else { return }
         
@@ -728,7 +776,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         IS_PACKAGED = true
         
-        let command = """
+        var command = """
         export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
         export POSITRON_PACKAGED=true
         export POSITRON_AUTH_TOKEN="\(AUTH_TOKEN)"
@@ -736,8 +784,21 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if [ -f "$HOME/.bash_profile" ]; then source "$HOME/.bash_profile"; fi
         
         cd "\(resourcePath)"
-        node index.js
+        
+        if [ -f "positron-backend" ]; then
+            exec "./positron-backend"
+        else
+            exec "node" "."
+        fi
+
         """
+
+        if let port = port {
+            command.insert(contentsOf: "export POSITRON_IPC_PORT=\(port); ", at: command.startIndex)
+        } else {
+            printError("WARNING: Failed to get random open port for IPC. Defaulting to 9000, which may cause conflicts.")
+        }
+
         nodeProcess?.arguments = ["-c", command]
         
         let pipe = Pipe()
@@ -880,7 +941,6 @@ private func populateMenu(_ menu: NSMenu, with items: [[String: Any]], windowId:
 
         menuItem.isEnabled = enabled
 
-        // Recurse for submenus
         if let subItems = item["items"] as? [[String: Any]], !subItems.isEmpty {
             let sub = NSMenu(title: label)
             populateMenu(sub, with: subItems, windowId: windowId)
@@ -893,6 +953,18 @@ private func populateMenu(_ menu: NSMenu, with items: [[String: Any]], windowId:
 
 setbuf(__stdoutp, nil)
 setbuf(__stderrp, nil)
+
+signal(SIGINT) { _ in
+    printError("Received SIGINT, shutting down…")
+    AppDelegate.shared?.nodeProcess?.terminate()
+    exit(0)
+}
+
+signal(SIGTERM) { _ in
+    printError("Received SIGTERM, shutting down…")
+    AppDelegate.shared?.nodeProcess?.terminate()
+    exit(0)
+} 
 
 let app = NSApplication.shared
 let delegate = AppDelegate()

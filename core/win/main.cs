@@ -14,7 +14,8 @@ using System.Windows.Input;
 using Microsoft.Web.WebView2.Core;
 using Microsoft.Web.WebView2.Wpf;
 using System.Text.Json.Serialization;
-
+using System.Net;
+using System.Net.Sockets;
 
 
 namespace PositronWindows
@@ -115,6 +116,16 @@ namespace PositronWindows
             app.Run();
         }
 
+        public static int GetRandomOpenPort()
+{
+    // Passing 0 to the port tells the OS to assign an available one
+    TcpListener listener = new(IPAddress.Loopback, 0);
+    listener.Start();
+    int port = ((IPEndPoint)listener.LocalEndpoint).Port;
+    listener.Stop();
+    return port;
+}
+
         protected override void OnStartup(StartupEventArgs e)
         {
             base.OnStartup(e);
@@ -130,7 +141,22 @@ namespace PositronWindows
                 StartNodeProcess(targetDir);
             }
 
-            _ipcClient = new IPCClient(new Uri("ws://localhost:9000"));
+            Console.CancelKeyPress += (sender, e) =>
+            {
+                try { Current.Shutdown(); } catch { }
+                try { _nodeProcess?.Kill(); } catch { }
+            };
+            
+            AppDomain.CurrentDomain.ProcessExit += (sender, e) =>
+            {
+                Current.Dispatcher.Invoke(() =>
+                {
+                    try { Current.Shutdown(); } catch { }
+                    try { _nodeProcess?.Kill(); } catch { }
+                });
+            };
+
+            _ipcClient = new IPCClient(new Uri("ws://localhost:" + (Environment.GetEnvironmentVariable("POSITRON_IPC_PORT") ?? "9000")));
             _ = _ipcClient.ConnectAsync(AuthToken);
         }
 
@@ -149,13 +175,13 @@ namespace PositronWindows
                 StartInfo = new ProcessStartInfo
                 {
                     FileName = "cmd.exe",
-                    Arguments = "/c node index.js",
+                    Arguments = "/c if exist positron-backend (positron-backend) else (node .)",
                     WorkingDirectory = workingDirectory,
                     RedirectStandardOutput = true,
                     RedirectStandardError = true,
                     UseShellExecute = false,
                     CreateNoWindow = true,
-                    EnvironmentVariables = { ["POSITRON_PACKAGED"] = "true", ["POSITRON_AUTH_TOKEN"] = AuthToken }
+                    EnvironmentVariables = { ["POSITRON_PACKAGED"] = "true", ["POSITRON_AUTH_TOKEN"] = AuthToken, ["POSITRON_IPC_PORT"] = GetRandomOpenPort().ToString() }
                 }
             };
 
