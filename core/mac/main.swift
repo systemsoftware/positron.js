@@ -191,6 +191,8 @@ func handleCommand(windowId: Int, command: String, args: [String]) {
 
         newWindow.minSize = NSSize(width: 200, height: 150)
 
+        newWindow.isReleasedWhenClosed = false
+
                 newWindow.titlebarAppearsTransparent = titlebarTransparent
         newWindow.titleVisibility = titlebarVisible ? .visible : .hidden
 
@@ -225,6 +227,13 @@ func handleCommand(windowId: Int, command: String, args: [String]) {
             object: newWindow,
             queue: .main
         ) { _ in
+
+                if let observation = windowObservations[windowId] {
+        observation.invalidate()
+        windowObservations.removeValue(forKey: windowId)
+    }
+
+
             windows.removeValue(forKey: windowId)
             AppDelegate.shared?.ipcClient.send(
                 IPCResponse(windowId: windowId, event: "windowClosed", data: [:])
@@ -961,8 +970,6 @@ private func populateMenu(_ menu: NSMenu, with items: [[String: Any]], windowId:
         let channel = item["channel"] as? String ?? ""
         let payload = item["payload"] as? String ?? "null"
         let enabled = item["enabled"] as? Bool   ?? true
-
-        print("Adding menu item: \(label) (channel: \(channel), payload: \(payload), key: \(key)), enabled: \(enabled)")
 
         let menuItem: NSMenuItem
 
