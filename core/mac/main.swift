@@ -159,17 +159,6 @@ struct IPCResponse: Codable {
 }
 
 
-    func windowShouldClose(_ sender: NSWindow) -> Bool {
-        guard let windowId = windows.first(where: { $0.value == sender })?.key else {
-            return true
-        }
-        self.ipcClient.send(
-            IPCResponse(windowId: windowId, event: "window-close-requested", data: [:])
-        )
-
-        return false
-    }
-
 // MARK: - Command Handler
 
 func handleCommand(windowId: Int, command: String, args: [String]) {
@@ -800,6 +789,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         setupDefaultMenu()
     }
 
+
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        guard let windowId = windows.first(where: { $0.value == sender })?.key else {
+            return true
+        }
+        self.ipcClient.send(
+            IPCResponse(windowId: windowId, event: "window-close-requested", data: [:])
+        )
+
+        return false
+    }
 
     func startNodeProcess() {
         guard let resourcePath = Bundle.main.resourcePath else { return }
