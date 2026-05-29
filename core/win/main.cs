@@ -127,7 +127,7 @@ namespace PositronWindows
     return port;
 }
 
-        protected override void OnStartup(StartupEventArgs e)
+        protected override async void OnStartup(StartupEventArgs e)
         {
             base.OnStartup(e);
             this.ShutdownMode = ShutdownMode.OnExplicitShutdown;
@@ -137,9 +137,14 @@ namespace PositronWindows
                 ? Path.Combine(basePath, "resources")
                 : basePath;
 
-            if (File.Exists(Path.Combine(targetDir, "index.js")))
+            if (File.Exists(Path.Combine(targetDir, "positron-backend.exe")))
             {
                 StartNodeProcess(targetDir);
+            } else
+            {
+                error("Failed to locate backend executable. Make sure 'positron-backend.exe' is in the resources folder.");
+                Shutdown();
+                return;
             }
 
             Console.CancelKeyPress += (sender, e) =>
@@ -159,7 +164,8 @@ namespace PositronWindows
                 });
             };
 
-            _ipcClient = new IPCClient(new Uri("ws://localhost:" + (Environment.GetEnvironmentVariable("POSITRON_IPC_PORT") ?? "9000")));
+            await Task.Delay(500);
+            _ipcClient = new IPCClient(new Uri($"ws://localhost:{_ipcPort}"));
             _ = _ipcClient.ConnectAsync(AuthToken);
         }
 
@@ -169,50 +175,65 @@ namespace PositronWindows
             base.OnExit(e);
         }
 
-        private void StartNodeProcess(string workingDirectory)
+private static int _ipcPort = 9000;
+
+private void StartNodeProcess(string workingDirectory)
+{
+    IsPackaged = true;
+
+    _ipcPort = GetRandomOpenPort();
+
+      string backendExe = Path.Combine(workingDirectory, "positron-backend.exe");
+
+    _nodeProcess = new Process
+    {
+        StartInfo = new ProcessStartInfo
         {
-            IsPackaged = true;
-
-            _nodeProcess = new Process
+            FileName = backendExe,
+            Arguments = "",
+            WorkingDirectory = workingDirectory,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            EnvironmentVariables =
             {
-                StartInfo = new ProcessStartInfo
-                {
-                    FileName = "cmd.exe",
-                    Arguments = "/c if exist positron-backend (positron-backend) else (node .)",
-                    WorkingDirectory = workingDirectory,
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true,
-                    UseShellExecute = false,
-                    CreateNoWindow = true,
-                    EnvironmentVariables = { ["POSITRON_PACKAGED"] = "true", ["POSITRON_AUTH_TOKEN"] = AuthToken, ["POSITRON_IPC_PORT"] = GetRandomOpenPort().ToString() }
-                }
-            };
-
-            _nodeProcess.OutputDataReceived += (s, args) =>
-            {
-                if (args.Data != null) Console.WriteLine($"[NODE BACKGROUND] {args.Data}");
-            };
-            _nodeProcess.ErrorDataReceived += (s, args) =>
-            {
-                if (args.Data != null) Console.WriteLine($"[NODE BACKGROUND ERROR] {args.Data}");
-            };
-
-            try
-            {
-                _nodeProcess.Start();
-                _nodeProcess.BeginOutputReadLine();
-                _nodeProcess.BeginErrorReadLine();
-            }
-            catch (Exception ex)
-            {
-                error($"Failed to start Node process: {ex.Message}");
+                ["POSITRON_PACKAGED"] = "true",
+                ["POSITRON_AUTH_TOKEN"] = AuthToken,
+                ["POSITRON_IPC_PORT"] = _ipcPort.ToString()
             }
         }
+    };
 
+    _nodeProcess.OutputDataReceived += (s, args) =>
+    {
+        if (args.Data != null) Console.WriteLine($"[NODE BACKGROUND] {args.Data}");
+    };
+    _nodeProcess.ErrorDataReceived += (s, args) =>
+    {
+        if (args.Data != null) Console.WriteLine($"[NODE BACKGROUND ERROR] {args.Data}");
+    };
+
+    try
+    {
+        _nodeProcess.Start();
+        _nodeProcess.BeginOutputReadLine();
+        _nodeProcess.BeginErrorReadLine();
+    }
+    catch (Exception ex)
+    {
+        error($"Failed to start Node process: {ex.Message}");
+    }
+}
+  
         // MARK: - Command Handler
 
         public static async Task HandleCommandAsync(int windowId, string command, List<string> args)
         {
+
+            WebView2? cvw = GetWebView(windowId);
+            if (cvw?.CoreWebView2 == null) return;
+
             switch (command)
             {
                 case "createWindow":
@@ -492,6 +513,60 @@ case "forceCloseWindow":
                     }
                     break;
 
+                    case "alert":
+    if (args.Count == 0) break;
+    MessageBox.Show(args[0], "", MessageBoxButton.OK, MessageBoxImage.None);
+    break;
+
+// Node uses "resizeWindow", not "resize"
+case "resizeWindow":
+    if (!WindowsMap.TryGetValue(windowId, out var winRsz)) break;
+    if (args.Count < 2 || !int.TryParse(args[0], out var rsW) || !int.TryParse(args[1], out var rsH)) break;
+    winRsz.Width = rsW;
+    winRsz.Height = rsH;
+    break;
+
+// Node uses "hideWindow"/"showWindow", not "hide"/"show"
+case "hideWindow":
+    if (WindowsMap.TryGetValue(windowId, out var winHideW)) winHideW.Hide();
+    break;
+
+case "showWindow":
+    if (WindowsMap.TryGetValue(windowId, out var winShowW)) winShowW.Show();
+    break;
+
+case "addUserScript":
+    if (args.Count == 0) break;
+    {
+        var wv = GetWebView(windowId);
+        if (wv?.CoreWebView2 != null)
+            await wv.CoreWebView2.AddScriptToExecuteOnDocumentCreatedAsync(args[0]);
+    }
+    break;
+
+case "setCloseable":
+    // WPF doesn't support disabling the close button cleanly; silently ignore
+    break;
+
+case "setResizable":
+    if (WindowsMap.TryGetValue(windowId, out var winRes))
+        winRes.ResizeMode = args[0] == "true" ? ResizeMode.CanResize : ResizeMode.NoResize;
+    break;
+
+case "setMinimizable":
+    // No direct WPF equivalent; silently ignore
+    break;
+
+case "setBounds":
+    if (!WindowsMap.TryGetValue(windowId, out var winBounds)) break;
+    if (args.Count < 4) break;
+    if (double.TryParse(args[0], out var bx)) winBounds.Left = bx;
+    if (double.TryParse(args[1], out var by)) winBounds.Top = by;
+    if (double.TryParse(args[2], out var bw)) winBounds.Width = bw;
+    if (double.TryParse(args[3], out var bh)) winBounds.Height = bh;
+    break;
+
+
                 case "prompt":
                     if (args.Count < 2)
                     {
@@ -506,7 +581,7 @@ case "forceCloseWindow":
                         {
                             windowId = windowId,
                             @event = "prompt-reply-" + windowId,
-                            data = new() { { "result", result } }
+                            data = new() { { "input", result } }
                         });
                     }
                     break;
@@ -709,6 +784,7 @@ case "forceCloseWindow":
 
 
                 default:
+                    Console.WriteLine($"[C#] Received command: {command} with args: {string.Join(", ", args)}");
                     var registry = ExtensionRegistry.GetExtensions();
                     if (registry.TryGetValue(command, out var handler))
                         handler(windowId, args);

@@ -39,6 +39,16 @@ const appEvents = new Events.EventEmitter();
 
 const isPackaged = process.env.POSITRON_PACKAGED === "true";
 
+if(isPackaged) {
+if (typeof process.pkg !== 'undefined') {
+  if (process.platform === 'darwin') {
+    __dirname = path.join(path.dirname(process.execPath), '.');
+  } else {
+    __dirname = path.dirname(process.execPath);
+  }
+}
+}
+
 const EXPECTED_TOKEN = process.env.POSITRON_AUTH_TOKEN;
 
 const parseRes = (obj) => {
@@ -97,6 +107,8 @@ const pendingWindows = new Set();
 
 
 const commandQueue = []; 
+
+let activeWindows = new Set();
 
 _ipcWS.on("connection", (ws, req) => {
 const clientToken = req.headers["x-positron-auth-token"];
@@ -567,7 +579,7 @@ async request(command, replyChannel, ...args) {
       resolve(data);
     });
 
-    this.sendCommand(command, ...args);
+    this.sendCommand(command, args);
   });
 }
 

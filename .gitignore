@@ -7,6 +7,3 @@ package-lock.json
 core/win/bin
 core/win/extensions
 core/win/obj
-
-# Soon
-addons

@@ -4,6 +4,8 @@ const path = require("path");
 const cp = require("child_process");
 const { success, error, info } = require("./logs");
 
+const arch = process.argv.includes("--x64") ? "x64" : process.argv.includes("--arm64") ? "arm64" : process.arch;
+
 function performNativeBuild() {
 
 
@@ -110,7 +112,11 @@ function performNativeBuild() {
         }
       });
 
-      cp.execSync(`swift -e 'import Cocoa; NSWorkspace.shared.setIcon(NSImage(contentsOfFile: "${path.join(__dirname, "positronicon.png")}"), forFile: "${path.join(outBinaryDir, binaryName)}", options: [])'`);
+      try {
+      cp.execSync(`swift -e 'import Cocoa; NSWorkspace.shared.setIcon(NSImage(contentsOfFile: "${path.join(__dirname, "positronicon.png")}"), forFile: "${path.join(outBinaryDir, binaryName)}", options: [])'`, { stdio: "ignore" });
+      } catch (err) {
+        error("Failed to set custom icon on native binary:", err);
+      }
     }
 
       return true;
@@ -142,8 +148,6 @@ function performNativeBuild() {
         const comma = index === nativeExtensionsWindows.length - 1 ? "" : ",";
         registryContent += `                { "${ext.command}", ${ext.className}.Handle }${comma}\n`;
 
-        // 2. Copy the external dependency .cs file into our local staging folder
-        // We use an index prefix just in case two plugins have a file named "main.cs"
         const destFile = path.join(extensionsDir, `ext_${index}.cs`);
         fs.copyFileSync(ext.sourceFile, destFile);
     });
@@ -159,9 +163,13 @@ function performNativeBuild() {
     if (!fs.existsSync(outBinaryDir)) fs.mkdirSync(outBinaryDir, { recursive: true });
 
     try {
+
+      const iconPath = path.join(appRoot, "icon.ico");
+const iconFlag = fs.existsSync(iconPath) ? `-p:ApplicationIcon="${iconPath}"` : "";
+
       let cmd = `dotnet publish "${path.join(coreWinDir, "PositronRuntime.csproj")}" ` +
-                `-c Release -r win-x64 --self-contained true -o "${outBinaryDir}" ` +
-                `/p:PublishSingleFile=true /p:IncludeNativeLibrariesForSelfContained=true`;
+                `-c Release -r win-${arch} --self-contained true -o "${outBinaryDir}" ` +
+                `/p:PublishSingleFile=true ${iconFlag} /p:IncludeNativeLibrariesForSelfContained=true`;
 
       cp.execSync(cmd, { stdio: "inherit" });
       success("[Builder] Windows native compilation successful.");
