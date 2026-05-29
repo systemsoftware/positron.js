@@ -16,6 +16,7 @@ using Microsoft.Web.WebView2.Wpf;
 using System.Text.Json.Serialization;
 using System.Net;
 using System.Net.Sockets;
+using Microsoft.VisualBasic;
 
 
 namespace PositronWindows
@@ -416,6 +417,27 @@ case "forceCloseWindow":
                     }
                     break;
 
+                    case "print":
+                        {
+                            var wv = GetWebView(windowId);
+                            if (wv != null && wv.CoreWebView2 != null)
+                                wv.CoreWebView2.ShowPrintUI();
+                        }
+                        break;
+
+                    case "setUserAgent":
+                        if (args.Count == 0)
+                        {
+                            error("setUserAgent — missing user agent string argument");
+                            break;
+                        }
+                        {
+                            var wv = GetWebView(windowId);
+                            if (wv != null && wv.CoreWebView2 != null)
+                                wv.CoreWebView2.Settings.UserAgent = args[0];
+                        }
+                        break;
+
                 case "evaluateJS":
                     if (args.Count == 0)
                     {
@@ -426,8 +448,26 @@ case "forceCloseWindow":
                         var wv = GetWebView(windowId);
                         if (wv != null)
                         {
-                            try { await wv.ExecuteScriptAsync(args[0]); }
-                            catch (Exception ex) { error($"evaluateJS failed: {ex.Message}"); }
+                            try
+                            {
+                                var result = await wv.ExecuteScriptAsync(args[0]);
+                                _ipcClient.Send(new IPCResponse
+                                {
+                                    windowId = windowId,
+                                    @event = "evaluateJS-reply-" + windowId,
+                                    data = new() { { "result", result ?? "null" } }
+                                });
+                            }
+                            catch (Exception ex)
+                            {
+                                error($"evaluateJS failed: {ex.Message}");
+                                _ipcClient.Send(new IPCResponse
+                                {
+                                    windowId = windowId,
+                                    @event = "evaluateJS-reply-" + windowId,
+                                    data = new() { { "error", ex.Message } }
+                                });
+                            }
                         }
                     }
                     break;
@@ -449,6 +489,25 @@ case "forceCloseWindow":
                             BalloonTipText = body
                         };
                         notification.ShowBalloonTip(3000);
+                    }
+                    break;
+
+                case "prompt":
+                    if (args.Count < 2)
+                    {
+                        error("prompt — expected message and defaultValue arguments");
+                        break;
+                    }
+                    {
+                        var message = args[0];
+                        var defaultValue = args[1];
+                        string result = Interaction.InputBox(message, "Prompt", defaultValue);
+                        _ipcClient.Send(new IPCResponse
+                        {
+                            windowId = windowId,
+                            @event = "prompt-reply-" + windowId,
+                            data = new() { { "result", result } }
+                        });
                     }
                     break;
 

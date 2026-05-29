@@ -275,6 +275,23 @@ class Window extends Events.EventEmitter {
   }
 
   /**
+   * Triggers the print dialog for the window. Emits a "print" event. Note that the actual print functionality and dialog is handled by the native layer, so behavior may vary across platforms.
+   */
+  print() {
+    this.sendCommand("print");
+    this.emit("print");
+  }
+
+  /**
+   * Sets the user agent string for the window. Emits a "user-agent-updated" event with the new user agent as data.
+   * @param {string} userAgent The new user agent string.
+   */
+  setUserAgent(userAgent) {
+    this.sendCommand("setUserAgent", [userAgent]);
+    this.emit("user-agent-updated", userAgent);
+  }
+
+  /**
    * Loads a local file in the window. Emits "file-loaded" and "navigated" events with the file path as data.
    * @param {string} path The path to the file to load.
    */
@@ -539,18 +556,18 @@ async canGoBack() {
 
 /**
  * Sends a request/response command to the native layer. The command will be sent, and the method will wait for a response on the specified reply channel. Once a response is received, the promise will resolve with the reply data.
- * @param {*} command The command to send.
- * @param {*} replyChannel The channel to listen for the reply on.
+ * @param {string} command The command to send.
+ * @param {string} replyChannel The channel to listen for the reply on.
  * @returns {Promise<*>} A promise that resolves to the reply data.
  */
-async request(command, replyChannel) {
+async request(command, replyChannel, ...args) {
   return new Promise((resolve) => {
     const unsubscribe = ipc.handle(replyChannel, (data) => {
       unsubscribe();
       resolve(data);
     });
 
-    this.sendCommand(command);
+    this.sendCommand(command, ...args);
   });
 }
 
@@ -580,7 +597,7 @@ showNotification(title, body, options = {}) {
 
 /**
  * Sets whether the window is closeable. Emits a "closeable-updated" event with the new value when done.
- * @param {*} isClosable Whether the window is closeable.
+ * @param {boolean} isClosable Whether the window is closeable.
  */
 setCloseable(isClosable) {
   this.sendCommand("setCloseable", [String(isClosable)]);
@@ -589,7 +606,7 @@ setCloseable(isClosable) {
 
 /** 
  * Sets whether the window is resizable. Emits a "resizable-updated" event with the new value when done.
- * @param {*} isResizable Whether the window is resizable.
+ * @param {boolean} isResizable Whether the window is resizable.
  */
 setResizable(isResizable) {
   this.sendCommand("setResizable", [String(isResizable)]);
@@ -598,7 +615,7 @@ setResizable(isResizable) {
 
 /** 
  * Sets whether the window is minimizable. Emits a "minimizable-updated" event with the new value when done.
- * @param {*} isMinimizable Whether the window is minimizable.
+ * @param {boolean} isMinimizable Whether the window is minimizable.
  */
 setMinimizable(isMinimizable) {
   this.sendCommand("setMinimizable", [String(isMinimizable)]);
@@ -617,6 +634,22 @@ setBounds(x, y, width, height) {
   this.emit("bounds-updated", { x, y, width, height });
 }
 
+/**
+ * Displays a prompt dialog with the given message and default value. Returns a Promise that resolves to the user's input as a string, or null if the user cancelled the prompt. Emits a "prompt" event with the message and default value as data when done.
+ * @param {string} message The message to display in the prompt dialog.
+ * @param {string} defaultValue The default value to display in the prompt input field.
+ * @returns {Promise<string|null>} The user's input as a string, or null if the user cancelled the prompt.
+ */
+async prompt(message, defaultValue = "") {
+  const res = await this.request("prompt", `prompt-reply-${this.id}`, message, defaultValue);
+  this.emit("prompt", { message, defaultValue });
+  return res?.input;
+}
+
+/**
+ * Sets the context menu for the window. The menuTemplate should be an array of menu item objects, where each object can have a label, an optional click handler, and an optional submenu (which is itself an array of menu item objects). Emits a "context-menu-updated" event with the new menu template when done.
+ * @param {Menu} menuTemplate 
+ */
 setContextMenu(menuTemplate) {
 
   if(menuTemplate instanceof Menu) {
@@ -688,7 +721,7 @@ setTitlebarTransparent(isTransparent) {
  * @returns {Promise<*>} A Promise that resolves to the result of the evaluation.
  */
 async evaluateJavaScript(script) {
-const res = await this.request("evaluateJS", `evaluateJS-reply-${this.id}`);
+const res = await this.request("evaluateJS", `evaluateJS-reply-${this.id}`, script);
 return res;
 }
 

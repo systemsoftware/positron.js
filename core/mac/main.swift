@@ -24,9 +24,7 @@ import Foundation
 
 final class PositronWebView: WKWebView {
     override func rightMouseDown(with event: NSEvent) {
-        if let customMenu = self.menu {
-            print("Intercepted right-click! Forcing custom context menu...")
-            
+        if let customMenu = self.menu {            
             customMenu.popUp(positioning: nil, at: NSEvent.mouseLocation, in: nil)
         } else {
             super.rightMouseDown(with: event)
@@ -525,6 +523,24 @@ UNUserNotificationCenter.current().requestAuthorization(
                             )
                         }
 
+    case "print":
+        guard let window = windows[windowId] else { return }
+        let printInfo = NSPrintInfo.shared
+        printInfo.horizontalPagination = .automatic
+        printInfo.verticalPagination = .automatic
+        printInfo.isHorizontallyCentered = true
+        printInfo.isVerticallyCentered = true
+
+        let printOperation = NSPrintOperation(view: window.contentView!, printInfo: printInfo)
+        printOperation.run()
+
+    case "setUserAgent":
+        guard let window = windows[windowId] else { return }
+        guard let userAgent = args.first else {
+            printError("setUserAgent — missing user agent string argument")
+            return
+        }
+        (window.contentView as? WKWebView)?.customUserAgent = userAgent
 
     case "evaluateJS":
         guard let window = windows[windowId] else { return }
@@ -534,7 +550,7 @@ UNUserNotificationCenter.current().requestAuthorization(
         }
         (window.contentView as? WKWebView)?.evaluateJavaScript(script) { result, error in
             if let error {
-                printError("evaluateJS failed: \(error.localizedDescription)")
+                printError("evaluateJS failed: \(error)")
             }
             let resultStr: String
             if let result = result {
@@ -552,8 +568,39 @@ UNUserNotificationCenter.current().requestAuthorization(
                 resultStr = "null"
             }
             AppDelegate.shared?.ipcClient.send(
-                IPCResponse(windowId: windowId, event: "evaluateJS-result-\(windowId)", data: ["result": resultStr])
+                IPCResponse(windowId: windowId, event: "evaluateJS-reply-\(windowId)", data: ["result": resultStr])
             )
+        }
+
+    case "prompt":
+        guard let window = windows[windowId] else { return }
+        guard let message = args.first else {
+            printError("prompt — missing message argument")
+            return
+        }
+        let alert = NSAlert()
+        alert.messageText = message
+        alert.addButton(withTitle: "OK")
+        alert.addButton(withTitle: "Cancel")
+
+        let inputField = NSTextField(frame: NSRect(x: 0, y: 0, width: 200, height: 24))
+        alert.accessoryView = inputField
+
+        if args.count > 1 {
+            inputField.stringValue = args[1]
+        }
+
+        alert.beginSheetModal(for: window) { response in
+            if response == .alertFirstButtonReturn {
+                let userInput = inputField.stringValue
+                AppDelegate.shared?.ipcClient.send(
+                    IPCResponse(windowId: windowId, event: "prompt-reply-\(windowId)", data: ["input": userInput])
+                )
+            } else {
+                AppDelegate.shared?.ipcClient.send(
+                    IPCResponse(windowId: windowId, event: "prompt-reply-\(windowId)", data: ["input": ""])
+                )
+            }
         }
 
     /// Push an event from Node down to the renderer: window.ipc.on('channel', fn)
@@ -968,8 +1015,6 @@ final class MenuActionTarget: NSObject {
 
 // MARK: - Safe Menu Retention & Subclasses
 
-/// A custom NSMenuItem that strongly retains its IPC action target 
-/// so we can stop managing volatile global arrays.
 final class PositronMenuItem: NSMenuItem {
     var retainedTarget: PositronMenuTarget? {
         didSet {
@@ -978,7 +1023,6 @@ final class PositronMenuItem: NSMenuItem {
     }
 }
 
-/// A unified target handler that handles both main menu and context menu clicks.
 final class PositronMenuTarget: NSObject {
     let windowId: Int
     let channel: String
