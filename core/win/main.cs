@@ -508,16 +508,14 @@ case "forceCloseWindow":
                     break;
 
                 case "isFocused":
-                    if (WindowsMap.TryGetValue(windowId, out var winFocus))
+                    if (!WindowsMap.TryGetValue(windowId, out var winFocusState)) break;
+                    bool isFocused = winFocusState.IsActive;
+                    _ipcClient.Send(new IPCResponse
                     {
-                        bool isFocused = winFocus.IsActive;
-                        _ipcClient.Send(new IPCResponse
-                        {
-                            windowId = windowId,
-                            @event = "isFocused-reply-" + windowId,
-                            data = new() { { "isFocused", isFocused.ToString().ToLower() } }
-                        });
-                    }
+                        windowId = windowId,
+                        @event = "isFocused-reply-" + windowId,
+                        data = new() { { "isFocused", isFocused.ToString().ToLower() } }
+                    });
                     break;
 
                 case "showNotification":

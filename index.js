@@ -589,11 +589,25 @@ async canGoBack() {
  * @returns {Promise<*>} A promise that resolves to the reply data.
  */
 async request(command, replyChannel, ...args) {
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+
     const unsubscribe = ipc.handle(replyChannel, (data) => {
-      unsubscribe();
-      resolve(data);
+      if (!settled) {
+        settled = true;
+        clearTimeout(timeout);
+        unsubscribe();
+        resolve(data);
+      }
     });
+
+    const timeout = setTimeout(() => {
+      if (!settled) {
+        settled = true;
+        unsubscribe();
+        reject(new Error(`Request timed out waiting for reply on channel "${replyChannel}"`));
+      }
+    }, 5000);
 
     this.sendCommand(command, args);
   });
@@ -834,14 +848,14 @@ userData: {
     let userPath = null;
 
     if (process.platform === "win32") {
-      userPath =
-        process.env.APPDATA ||
-        path.join(
-          process.env.USERPROFILE,
-          "AppData",
-          "Roaming",
-          process.env.POSITRON_APP_NAME
-        );
+      userPath = process.env.APPDATA
+        ? path.join(process.env.APPDATA, process.env.POSITRON_APP_NAME)
+        : path.join(
+            process.env.USERPROFILE,
+            "AppData",
+            "Roaming",
+            process.env.POSITRON_APP_NAME
+          );
     } else if (process.platform === "darwin") {
       userPath = path.join(
         process.env.HOME,

@@ -1,20 +1,23 @@
 {
   "name": "positron-core",
+  "description": "A lightweight cross-platform hybrid application framework designed to build desktop applications using a native compiled runtime driven by a Node.js main process.",
+  "repository": {
+    "url": "https://github.com/systemsoftware/positron-core"
+  },
+  "homepage": "https://positronjs.gitbook.io",
   "version": "1.0.0",
-  "description": "",
   "main": "index.js",
   "keywords": [
     "app",
     "framework",
     "desktop"
   ],
-  "author": "",
+  "author": "Bryce",
   "license": "MIT",
   "type": "commonjs",
   "dependencies": {
     "@yao-pkg/pkg": "^6.20.0",
     "esbuild": "^0.28.0",
-    "nan": "^2.27.0",
     "resedit": "^3.0.2",
     "ws": "^8.20.1"
   },

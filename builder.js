@@ -30,16 +30,39 @@ function performNativeBuild() {
       const depPackage = JSON.parse(fs.readFileSync(depPackagePath, "utf8"));
       if (depPackage.positron) {
         const depDir = path.dirname(depPackagePath);
+
+          let missing = [];
+          if(!depPackage.positron.className) missing.push("className");
+          if(!depPackage.positron.command) missing.push("command");
+          if(!depPackage.positron.platforms) missing.push("platforms");
+          else {
+            if(!depPackage.positron.platforms.darwin) missing.push("platforms.darwin");
+            if(!depPackage.positron.platforms.win32) missing.push("platforms.win32");
+          }
+          
+          if(missing.includes("className") || missing.includes("command") || missing.includes("platforms")) {
+            warn(`[Builder] Dependency "${dep}" has an invalid positron field. Missing: ${missing.join(", ")}. Skipping native extension build for this dependency.`);
+            continue;
+          }
+        
+        if(!missing.includes("platforms.darwin")) {
         nativeExtensionsMac.push({
           className: depPackage.positron.className, 
           command: depPackage.positron.command,
           sourceFile: path.join(depDir, depPackage.positron.platforms.darwin)
         });
+      } else {
+        warn(`[Builder] Dependency "${dep}" is missing a macOS platform source file. Skipping macOS native extension build for this dependency.`);
+      }
+      if(!missing.includes("platforms.win32")) {
         nativeExtensionsWindows.push({
           className: depPackage.positron.className, 
           command: depPackage.positron.command,
           sourceFile: path.join(depDir, depPackage.positron.platforms.win32)
         });
+      } else {
+        warn(`[Builder] Dependency "${dep}" is missing a Windows platform source file. Skipping Windows native extension build for this dependency.`);
+      }
       }
     }
   }
