@@ -109,6 +109,8 @@ namespace PositronWindows
         private static readonly Dictionary<int, Window> WindowsMap = new();
         private static readonly Dictionary<int, DockPanel> LayoutMap = new();
         private static readonly Dictionary<int, Menu> MenuMap = new();
+        private static readonly HashSet<int> _forceClosing = new();
+        private static readonly Dictionary<int, TaskCompletionSource> ReadyMap = new();
 
         [STAThread]
         public static void Main()
@@ -139,12 +141,24 @@ namespace PositronWindows
 
             if (File.Exists(Path.Combine(targetDir, "positron-backend.exe")))
             {
+                // PACKAGED MODE — C# is the entry point; launch the Node backend
                 StartNodeProcess(targetDir);
-            } else
+            }
+            else
             {
-                error("Failed to locate backend executable. Make sure 'positron-backend.exe' is in the resources folder.");
-                Shutdown();
-                return;
+                // DEV MODE — Node launched us; read the port it set in the environment
+                var envPort = Environment.GetEnvironmentVariable("POSITRON_IPC_PORT");
+                if (!string.IsNullOrEmpty(envPort) && int.TryParse(envPort, out var port))
+                {
+                    _ipcPort = port;
+                    error("INFO: Dev mode — connecting to existing Node IPC server on port " + port);
+                }
+                else
+                {
+                    error("No positron-backend.exe found and POSITRON_IPC_PORT not set. Cannot start.");
+                    Shutdown();
+                    return;
+                }
             }
 
             Console.CancelKeyPress += (sender, e) =>
@@ -230,9 +244,11 @@ private void StartNodeProcess(string workingDirectory)
 
         public static async Task HandleCommandAsync(int windowId, string command, List<string> args)
         {
-
-            WebView2? cvw = GetWebView(windowId);
-            if (cvw?.CoreWebView2 == null) return;
+            // For commands other than createWindow, wait until the window's WebView2 is fully ready
+            if (command != "createWindow" && ReadyMap.TryGetValue(windowId, out var tcs))
+            {
+                await tcs.Task;
+            }
 
             switch (command)
             {
@@ -252,58 +268,35 @@ private void StartNodeProcess(string workingDirectory)
                     };
 
                     var dockPanel = new DockPanel();
-                    var webView  = new WebView2();
+                    var webView   = new WebView2();
 
                     dockPanel.Children.Add(webView);
                     DockPanel.SetDock(webView, Dock.Bottom);
                     window.Content = dockPanel;
 
-window.Closing += (s, cancelArgs) =>
-{
-    cancelArgs.Cancel = true; 
+                    // Intercept the close button — ask Node first
+                    window.Closing += (s, cancelArgs) =>
+                    {
+                        if (_forceClosing.Remove(windowId))
+                            return; // Allow the close (forceCloseWindow was called)
 
-    _ipcClient.Send(new IPCResponse 
-    { 
-        windowId = windowId, 
-        @event = "window-close-requested" 
-    });
-};
+                        cancelArgs.Cancel = true;
+                        _ipcClient.Send(new IPCResponse
+                        {
+                            windowId = windowId,
+                            @event = "window-close-requested"
+                        });
+                    };
 
-window.Closed += (s, e) =>
-{
-    WindowsMap.Remove(windowId);
-    LayoutMap.Remove(windowId);
-    MenuMap.Remove(windowId);
-
-    _ipcClient.Send(new IPCResponse { windowId = windowId, @event = "windowClosed" });
-
-    if (WindowsMap.Count == 0)
-        Application.Current.Shutdown();
-};
-
-
-                    var wv = new WebView2();
-
-wv.CoreWebView2InitializationCompleted += (sender, e) =>
-{
-    if (e.IsSuccess)
-    {
-        wv.CoreWebView2.DocumentTitleChanged += (s, args) =>
-        {
-            window.Title = wv.CoreWebView2.DocumentTitle;
-        };
-    }
-};
-
-                    // Register before Show() so the event is never missed
+                    // Clean up after the window is actually destroyed (single subscription)
                     window.Closed += (s, e) =>
                     {
                         WindowsMap.Remove(windowId);
                         LayoutMap.Remove(windowId);
                         MenuMap.Remove(windowId);
+                        ReadyMap.Remove(windowId);
                         _ipcClient.Send(new IPCResponse { windowId = windowId, @event = "windowClosed" });
 
-                        // If all windows are closed, cleanly exit the application
                         if (WindowsMap.Count == 0)
                             Application.Current.Shutdown();
                     };
@@ -311,12 +304,22 @@ wv.CoreWebView2InitializationCompleted += (sender, e) =>
                     WindowsMap[windowId] = window;
                     LayoutMap[windowId]  = dockPanel;
 
+                    // Create a readiness gate — other commands for this window will await it
+                    var readyTcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                    ReadyMap[windowId] = readyTcs;
+
                     window.Show();
 
                     // Init WebView2 & inject preload script
                     await webView.EnsureCoreWebView2Async();
                     webView.CoreWebView2.Settings.AreDevToolsEnabled = !IsPackaged;
                     await webView.CoreWebView2.AddScriptToExecuteOnDocumentCreatedAsync(MakePreloadScript(windowId));
+
+                    // Sync window title with page title
+                    webView.CoreWebView2.DocumentTitleChanged += (s, _) =>
+                    {
+                        window.Title = webView.CoreWebView2.DocumentTitle;
+                    };
 
             webView.CoreWebView2.ContextMenuRequested += (s, e) =>
 {
@@ -332,6 +335,9 @@ wv.CoreWebView2InitializationCompleted += (sender, e) =>
                     {
                         HandleWebViewIPC(windowId, e.WebMessageAsJson);
                     };
+
+                    // Signal that this window is fully ready for commands
+                    readyTcs.TrySetResult();
                     break;
                 }
 
@@ -353,7 +359,7 @@ wv.CoreWebView2InitializationCompleted += (sender, e) =>
 
     // 2. Build the context menu using our helper
     var contextMenu = new ContextMenu();
-    PopulateMenu(contextMenu.Items, ctxDescriptor, windowId);
+    PopulateMenu(contextMenu.Items, ctxDescriptor, windowId, "context-menu-action");
     
     // 3. Attach it to the layout
     layout.ContextMenu = contextMenu;
@@ -381,9 +387,8 @@ wv.CoreWebView2InitializationCompleted += (sender, e) =>
 case "forceCloseWindow":
     if (WindowsMap.TryGetValue(windowId, out var winForce))
     {
-        winForce.Closing -= (s, e) => { e.Cancel = true; };
-        
-        winForce.Close(); 
+        _forceClosing.Add(windowId);
+        winForce.Close();
     }
     else
     {
@@ -831,14 +836,14 @@ case "setBounds":
 
                 var items = topLevel["items"]?.AsArray();
                 if (items != null)
-                    PopulateMenu(topItem.Items, items, windowId);
+                    PopulateMenu(topItem.Items, items, windowId, "menu-action");
             }
 
             layout.Children.Insert(0, menu); // Push menu to top of layout
             MenuMap[windowId] = menu;
         }
 
-  private static void PopulateMenu(ItemCollection parentItems, JsonArray items, int windowId)
+  private static void PopulateMenu(ItemCollection parentItems, JsonArray items, int windowId, string eventType = "menu-action")
 {
     foreach (var item in items)
     {
@@ -854,23 +859,22 @@ case "setBounds":
         var enabled = item?["enabled"]?.GetValue<bool>()    ?? true;
 
         var menuItem = new MenuItem { Header = label, IsEnabled = enabled };
-        if (!string.IsNullOrEmpty(channel))
+
+        // Always attach a click handler — items with only a `click` callback (no channel)
+        // still need to send an event so Node can look up the handler by label.
+        menuItem.Click += (s, e) =>
         {
-            menuItem.Click += (s, e) =>
+            _ipcClient.Send(new IPCResponse
             {
-                _ipcClient.Send(new IPCResponse
-                {
-                    windowId = windowId,
-                    // Note: You can keep this as "menu-action" for both, or branch logic if needed
-                    @event = "menu-action", 
-                    data = new() { { "channel", channel }, { "payload", payload }, { "label", label } }
-                });
-            };
-        }
+                windowId = windowId,
+                @event = eventType, 
+                data = new() { { "channel", channel }, { "payload", payload }, { "label", label } }
+            });
+        };
 
         var subItems = item?["items"]?.AsArray();
         if (subItems != null && subItems.Count > 0)
-            PopulateMenu(menuItem.Items, subItems, windowId);
+            PopulateMenu(menuItem.Items, subItems, windowId, eventType);
 
         parentItems.Add(menuItem);
     }
@@ -1079,7 +1083,7 @@ case "setBounds":
                 var msg = JsonSerializer.Deserialize<IPCMessage>(text);
                 if (msg == null) return;
 
-                Application.Current.Dispatcher.Invoke(async () =>
+                _ = Application.Current.Dispatcher.InvokeAsync(async () =>
                 {
                     try
                     {
@@ -1087,7 +1091,7 @@ case "setBounds":
                     }
                     catch (Exception ex)
                     {
-                        error($"Failed to decode IPC message '{text}': {ex.Message}\n{ex.StackTrace}");
+                        error($"Failed to handle IPC command '{msg.command}': {ex.Message}\n{ex.StackTrace}");
                     }
                 });
             }

@@ -226,6 +226,7 @@ class Window extends Events.EventEmitter {
     super();
     this.id = ++_windowCounter;
     this.options = options;
+    activeWindows.add(this);
 
     if (activeSocket && activeSocket.readyState === WebSocket.OPEN) {
       process.nextTick(() => this.emit("ready"));
