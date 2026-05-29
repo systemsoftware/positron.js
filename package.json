@@ -7,6 +7,9 @@
   "homepage": "https://positronjs.gitbook.io",
   "version": "1.0.0",
   "main": "index.js",
+  "scripts": {
+    "test": "node --test"
+  },
   "keywords": [
     "app",
     "framework",

@@ -1,0 +1,11 @@
+test
+.github
+bin/positron-runtime
+core/mac/main
+core/mac/Registry.swift
+node_modules
+package-lock.json
+.DS_Store
+core/win/bin
+core/win/extensions
+core/win/obj
