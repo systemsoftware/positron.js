@@ -603,7 +603,13 @@ UNUserNotificationCenter.current().requestAuthorization(
             }
         }
 
-    /// Push an event from Node down to the renderer: window.ipc.on('channel', fn)
+    case "isFocused":
+        guard let window = windows[windowId] else { return }
+        let isFocused = window.isKeyWindow
+        AppDelegate.shared?.ipcClient.send(
+            IPCResponse(windowId: windowId, event: "isFocused-reply-\(windowId)", data: ["isFocused": isFocused ? "true" : "false"])
+        )
+
     case "emitToRenderer":
         guard let window = windows[windowId] else { return }
         guard args.count >= 2 else {
@@ -943,6 +949,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
         
+        nodeProcess?.terminationHandler = { _ in
+            printError("INFO: Node process terminated. Shutting down app.")
+            NSApp.terminate(nil)
+        }
+
         do {
             try nodeProcess?.run()
         } catch {

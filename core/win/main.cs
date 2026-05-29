@@ -228,6 +228,15 @@ private void StartNodeProcess(string workingDirectory)
         if (args.Data != null) Console.WriteLine($"[NODE BACKGROUND ERROR] {args.Data}");
     };
 
+    _nodeProcess.Exited += (s, args) =>
+    {
+        error("INFO: Node process exited. Shutting down app.");
+        Current.Dispatcher.Invoke(() =>
+        {
+            try { Current.Shutdown(); } catch { }
+        });
+    };
+
     try
     {
         _nodeProcess.Start();
@@ -495,6 +504,19 @@ case "forceCloseWindow":
                                 });
                             }
                         }
+                    }
+                    break;
+
+                case "isFocused":
+                    if (WindowsMap.TryGetValue(windowId, out var winFocus))
+                    {
+                        bool isFocused = winFocus.IsActive;
+                        _ipcClient.Send(new IPCResponse
+                        {
+                            windowId = windowId,
+                            @event = "isFocused-reply-" + windowId,
+                            data = new() { { "isFocused", isFocused.ToString().ToLower() } }
+                        });
                     }
                     break;
 

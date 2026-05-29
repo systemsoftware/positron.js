@@ -4,6 +4,7 @@ const { execSync } = require("child_process");
 const { info, error, success } = require("./logs");
 const https = require("https");
 const esbuild = require("esbuild");
+const findPackageJson = require("./findpackage");
 
 const MAJOR_NODE_V = 24;
 
@@ -13,9 +14,9 @@ const arch = process.argv.includes("--x64") ? "x64" : process.argv.includes("--a
 
 function performPackager() {
   const appRoot = process.cwd();
-  const rootPackage = JSON.parse(fs.readFileSync(path.join(appRoot, "package.json"), "utf8"));
+  const rootPackage = findPackageJson(appRoot)?.packageJson;
   
-  const appName = rootPackage.name || "PositronApp";
+  const appName = process.env.POSITRON_APP_NAME || rootPackage.productName || rootPackage.name || "PositronApp";
   const distDir = path.join(appRoot, "dist");
   
   if (fs.existsSync(distDir)) fs.rmSync(distDir, { recursive: true, force: true });

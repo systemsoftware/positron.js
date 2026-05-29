@@ -82,6 +82,21 @@ if (!isPackaged) {
         process.exit(1);
     });
 
+    process.on("exit", () => {
+  if (!isPackaged && renderProcess && !renderProcess.killed) {
+    renderProcess.kill();
+  }
+});
+
+process.on("SIGINT", () => {
+  process.exit();
+});
+
+process.on("uncaughtException", (err) => {
+  error("Uncaught exception:", err, '\n', err.stack.split('\n').slice(1).join('\n'));
+  process.exit(1);
+});
+
     renderProcess.on("close", (code) => {
         info(`[Positron] Render process exited with code ${code}`);
         process.exit(code);
@@ -686,6 +701,11 @@ setContextMenu(menuTemplate) {
   this.emit("context-menu-updated", menuTemplate);
 }
 
+async isFocused() {
+  const res = await this.request("isFocused", `isFocused-reply-${this.id}`);
+  return res?.isFocused === "true";
+}
+
 /**
  * Gets the current bounds of the window. Returns a Promise that resolves to an object containing the x and y coordinates of the window's position, as well as its width and height. Emits a "bounds-retrieved" event with the bounds data when done.
  * @returns {Promise<{x: number, y: number, width: number, height: number}>} An object containing the window's bounds.
@@ -742,6 +762,8 @@ return res;
 
 const app = {
 
+  name:"PositronApp",
+
   /**
    * Quits the application by sending a terminate command to the native layer and then exiting the process. Emits a "before-quit" event before sending the command, and a "quit" event after initiating the quit sequence.
    * @param {number} exitCode The exit code for the process.
@@ -792,6 +814,71 @@ const app = {
     this.events.once(event, listener);
   },
 
+  async getFocusedWindow() {
+   const results = await Promise.all([...activeWindows].map(win => win.isFocused().then(isFocused => ({ win, isFocused }))));
+   return results.find(({ isFocused }) => isFocused)?.win || null;
+  },
+
+  setName(name) {
+    process.env.POSITRON_APP_NAME = name;
+    this.events.emit("name-updated", name);
+    this.name = name;
+    const path = this.userData.getPath();
+    if (!fs.existsSync(path)) {
+      fs.mkdirSync(path, { recursive: true });
+    }
+  },
+
+userData: {
+  getPath() {
+    let userPath = null;
+
+    if (process.platform === "win32") {
+      userPath =
+        process.env.APPDATA ||
+        path.join(
+          process.env.USERPROFILE,
+          "AppData",
+          "Roaming",
+          process.env.POSITRON_APP_NAME
+        );
+    } else if (process.platform === "darwin") {
+      userPath = path.join(
+        process.env.HOME,
+        "Library",
+        "Application Support",
+        process.env.POSITRON_APP_NAME
+      );
+    }
+
+    if(!fs.existsSync(userPath)) {
+      fs.mkdirSync(userPath, { recursive: true });
+  }
+
+    return userPath;
+  },
+
+  create() {
+    const userPath = this.getPath();
+
+    if (!fs.existsSync(userPath)) {
+      fs.mkdirSync(userPath, { recursive: true });
+      success("User data directory created successfully.");
+    }
+  },
+
+  delete() {
+    const userPath = this.getPath();
+
+    if (fs.existsSync(userPath)) {
+      fs.rmSync(userPath, { recursive: true, force: true });
+      success("User data deleted successfully.");
+    } else {
+      warn("User data path does not exist:", userPath);
+    }
+  }
+},
+
   /**
    * Full access to the underlying event emitter for application-level events, allowing for advanced event handling patterns if needed.
    */
@@ -799,7 +886,12 @@ const app = {
   
 }
 
-module.exports = { Window, ipc, isPackaged, app, PORT, };
+module.exports = { Window, ipc, isPackaged, app, PORT };
+
+const findNearestPackageJson = require("./findpackage");
+
+const pkgjson = findNearestPackageJson()?.packageJson;
+app.setName(pkgjson?.productName || pkgjson?.name || app.name);
 
 httpServer.listen(PORT, HOST, () => {
 info("IPC server running on " + HOST + ":" + PORT);
