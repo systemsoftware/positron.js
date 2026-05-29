@@ -17,6 +17,19 @@ Positron operates via a split architecture:
 - Production Packager: Automatically abstracts bundle constraints to output native macOS .app structures (complete with mandatory Info.plist manifests) and clean Windows application folders.
 - Zero-Config Dev Builds: Automatically detects missing platform-specific native binaries on launch and compiles them in the background.
 
+## Why Use Positron?
+
+Positron is built as a lightweight, secure alternative to Electron. Below is a detailed breakdown of how Positron compares to Electron across key architectural and performance metrics.
+
+| Metric | Electron | Positron |
+| :--- | :--- | :--- |
+| **Render Engine** | Chromium (bundled in every app) | System-native viewports (WebKit/WKWebView on macOS, WebView2 on Windows) |
+| **Process Model** | Multi-process tree (Main, Renderers, GPU, Network, Utility processes) | Dual-process layout (Single native Swift/C# UI runtime + Background Node.js controller) |
+| **Minimum Bundle Size** | ~100MB+ (compressed), ~300MB+ (extracted) | **~60MB - 100MB** (depending on bundled assets and compiled backend) |
+| **Memory Footprint** | Heavy (runs full Chromium engine processes) | **Lightweight** (reuses system WebKit/WebView2 instances) |
+| **Native Extensions** | Requires Node C++ Addons (N-API/NAN) compiled against Node headers | **Stitched Native Extensions** written directly in Swift (macOS) or C# (Windows) |
+| **Security Isolation** | IPC bridging to Node with complex sandbox/context-isolation setups | **Strict separation by design**; renderer has zero direct access to Node.js APIs |
+
 ## Prerequisites
 - Node.js (v16+)
 - macOS: Xcode Command Line Tools (swiftc)
@@ -99,13 +112,13 @@ npx positron run
 ### Packaging
 This will rebuild the binary, then create a deployable version of the app
 ```bash
-npx positron package [--obfuscate]
+npx positron package [--m | --w] [--arm64 || --x64]
 ```
 
-> Note: to obfuscate any JS, add the `--obfuscate` flag
+> Note: Windows supports either arm64 or x64, while macOS only supports arm64 on Apple Silicon.
 
 ## IPC Protocol Specification
-Communication relies on structured JSON communication frames routed through port 9000 (configurable via process.env.POSITRON_IPC_PORT).
+Communication relies on structured JSON communication frames routed through the IPC WebSocket server.
 
 ### Outbound Commands (Main Node ➔ Native Runtime)
 
@@ -132,7 +145,7 @@ Communication relies on structured JSON communication frames routed through port
 
 ## Environment Flags
 - POSITRON_PACKAGED: Set to "true" inside production bundles to suppress localized development shell background re-compilation triggers.
-- POSITRON_IPC_PORT: Defaults to 9000. Overrides the target WebSocket server orchestration layer binding port.
+- POSITRON_IPC_PORT: The port that the IPC server runs on.
 
 ## License
 MIT

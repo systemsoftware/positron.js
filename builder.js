@@ -85,35 +85,47 @@ function performNativeBuild() {
     if (!fs.existsSync(outBinaryDir)) fs.mkdirSync(outBinaryDir, { recursive: true });
 
     const binaryName = "positron-runtime";
-    const extensionSources = nativeExtensionsMac.map(e => e.sourceFile).join(" ");
+    const extensionSources = nativeExtensionsMac.map(e => e.sourceFile);
     
-    let addedFrameworks = []
+    let addedFrameworksSet = new Set();
 
     nativeExtensionsMac.forEach(ext => {
       if (ext.macFrameworks && Array.isArray(ext.macFrameworks)) {
         ext.macFrameworks.forEach(fw => {
-          if (!addedFrameworks.includes(fw)) {
-            addedFrameworks.push(`-framework ${fw}`);
-          }
+          addedFrameworksSet.add(fw);
         });
       }
     });
+    
+    let addedFrameworksArgs = [];
+    addedFrameworksSet.forEach(fw => {
+      addedFrameworksArgs.push("-framework", fw);
+    });
 
     try {
-      cp.execSync(
-        `swiftc ${path.join(coreMacDir, "main.swift")} ${path.join(coreMacDir, "Registry.swift")} ${extensionSources} -o ${path.join(outBinaryDir, binaryName)} -framework Cocoa -framework WebKit ${addedFrameworks.join(" ")}`,
-      );
+      cp.execFileSync("swiftc", [
+        path.join(coreMacDir, "main.swift"),
+        path.join(coreMacDir, "Registry.swift"),
+        ...extensionSources,
+        "-o", path.join(outBinaryDir, binaryName),
+        "-framework", "Cocoa",
+        "-framework", "WebKit",
+        ...addedFrameworksArgs
+      ]);
       success("[Builder] Native compilation successful.");
 
           if(process.platform == "darwin") {
-      cp.exec(`chmod +x "${path.join(outBinaryDir, binaryName)}"`, (err) => {
+      cp.execFile("chmod", ["+x", path.join(outBinaryDir, binaryName)], (err) => {
         if (err) {
           error("Failed to set executable permissions on native binary:", err);
         }
       });
 
       try {
-      cp.execSync(`swift -e 'import Cocoa; NSWorkspace.shared.setIcon(NSImage(contentsOfFile: "${path.join(__dirname, "positronicon.png")}"), forFile: "${path.join(outBinaryDir, binaryName)}", options: [])'`, { stdio: "ignore" });
+        const iconPathEscaped = path.join(__dirname, "positronicon.png").replace(/"/g, '\\"');
+        const binPathEscaped = path.join(outBinaryDir, binaryName).replace(/"/g, '\\"');
+        const swiftScript = `import Cocoa; NSWorkspace.shared.setIcon(NSImage(contentsOfFile: "${iconPathEscaped}"), forFile: "${binPathEscaped}", options: [])`;
+        cp.execFileSync("swift", ["-e", swiftScript], { stdio: "ignore" });
       } catch (err) {
         error("Failed to set custom icon on native binary:", err);
       }
@@ -165,13 +177,21 @@ function performNativeBuild() {
     try {
 
       const iconPath = path.join(appRoot, "icon.ico");
-const iconFlag = fs.existsSync(iconPath) ? `-p:ApplicationIcon="${iconPath}"` : "";
+      const dotnetArgs = [
+        "publish",
+        path.join(coreWinDir, "PositronRuntime.csproj"),
+        "-c", "Release",
+        "-r", `win-${arch}`,
+        "--self-contained", "true",
+        "-o", outBinaryDir,
+        "/p:PublishSingleFile=true",
+        "/p:IncludeNativeLibrariesForSelfContained=true"
+      ];
+      if (fs.existsSync(iconPath)) {
+        dotnetArgs.push(`/p:ApplicationIcon=${iconPath}`);
+      }
 
-      let cmd = `dotnet publish "${path.join(coreWinDir, "PositronRuntime.csproj")}" ` +
-                `-c Release -r win-${arch} --self-contained true -o "${outBinaryDir}" ` +
-                `/p:PublishSingleFile=true ${iconFlag} /p:IncludeNativeLibrariesForSelfContained=true`;
-
-      cp.execSync(cmd, { stdio: "inherit" });
+      cp.execFileSync("dotnet", dotnetArgs, { stdio: "inherit" });
       success("[Builder] Windows native compilation successful.");
       return true;
     } catch (err) {

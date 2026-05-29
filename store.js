@@ -13,6 +13,9 @@ module.exports = class DataStore {
     constructor(id) {
 
         if(!id) throw new Error("Store id is required")
+        if (id.includes("/") || id.includes("\\") || id === ".." || id === ".") {
+            throw new Error("Invalid store id: cannot contain path traversals")
+        }
 
         this.id = id
 
