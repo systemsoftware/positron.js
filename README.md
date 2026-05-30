@@ -37,13 +37,13 @@ Positron is built as a lightweight, secure alternative to Electron. Below is a d
 
 ## Install
 ```bash
-npm i positron-core
+npm i positron.js
 ```
 
 ## Usage Example
 Initialize your main entry point using the exposed Window and ipc instances:
 ```js
-const { Window, ipc } = require('positron-core');
+const { Window, ipc } = require('positron.js');
 
 // Bind asynchronous IPC listeners from renderer layers
 ipc.handle('get-app-version', (payload, { reply }) => {
