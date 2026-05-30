@@ -105,8 +105,7 @@ namespace PositronWindows
         public static IPCClient _ipcClient = null!;
         private static Process? _nodeProcess;
 
-        /// <summary>All window access must happen on the UI thread.</summary>
-        private static readonly Dictionary<int, Window> WindowsMap = new();
+        public static readonly Dictionary<int, Window> WindowsMap = new();
         private static readonly Dictionary<int, DockPanel> LayoutMap = new();
         private static readonly Dictionary<int, Menu> MenuMap = new();
         private static readonly HashSet<int> _forceClosing = new();
@@ -819,7 +818,7 @@ case "setBounds":
             }
         }
 
-        private static WebView2? GetWebView(int windowId)
+        public static WebView2? GetWebView(int windowId)
         {
             if (LayoutMap.TryGetValue(windowId, out var layout))
             {

@@ -594,6 +594,15 @@ async request(command, replyChannel, ...args) {
   return new Promise((resolve, reject) => {
     let settled = false;
 
+    if(!command) {
+      reject(new Error("Command is required for request"));
+      return;
+    }
+
+    if(!replyChannel) {
+      replyChannel = `${command}-reply-${this.id}`;
+    }
+
     const unsubscribe = ipc.handle(replyChannel, (data) => {
       if (!settled) {
         settled = true;
@@ -603,13 +612,32 @@ async request(command, replyChannel, ...args) {
       }
     });
 
-    const timeout = setTimeout(() => {
+    let timeout;
+
+    if(!args.includes("NO_TIMEOUT")) {
+      let timeoutDuration = 7000;
+     
+      const timeoutArg = args.find(
+  arg => typeof arg === "string" && arg.startsWith("TIMEOUT=")
+);
+
+if (timeoutArg) {
+
+  args = args.filter(arg => arg !== timeoutArg);
+
+  timeoutDuration = parseInt(timeoutArg.split("=")[1], 10);
+}
+      
+    timeout = setTimeout(() => {
       if (!settled) {
         settled = true;
         unsubscribe();
         reject(new Error(`Request timed out waiting for reply on channel "${replyChannel}"`));
       }
-    }, 5000);
+    }, timeoutDuration);
+  } else {
+    args = args.filter(arg => arg !== "NO_TIMEOUT");
+  }
 
     this.sendCommand(command, [...args, replyChannel]);
   });
