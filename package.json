@@ -2,7 +2,7 @@
   "name": "positron.js",
   "description": "A lightweight cross-platform hybrid application framework designed to build desktop applications using a native compiled runtime driven by a Node.js main process.",
   "repository": {
-    "url": "https://github.com/systemsoftware/positron-app"
+    "url": "https://github.com/systemsoftware/positron.js"
   },
   "homepage": "https://positronjs.gitbook.io",
   "version": "1.0.0",
