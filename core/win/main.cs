@@ -102,7 +102,7 @@ namespace PositronWindows
 
         public static bool IsPackaged { get; private set; } = false;
 
-        private static IPCClient _ipcClient = null!;
+        public static IPCClient _ipcClient = null!;
         private static Process? _nodeProcess;
 
         /// <summary>All window access must happen on the UI thread.</summary>

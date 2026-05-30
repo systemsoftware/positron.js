@@ -226,6 +226,8 @@ let _windowCounter = 0;
 
 class Window extends Events.EventEmitter {
 
+  id = 0;
+
   /** Creates a new window instance. */
   constructor(options = {
 
@@ -609,7 +611,7 @@ async request(command, replyChannel, ...args) {
       }
     }, 5000);
 
-    this.sendCommand(command, args);
+    this.sendCommand(command, [...args, replyChannel]);
   });
 }
 
