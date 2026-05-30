@@ -295,16 +295,6 @@ class Window extends Events.EventEmitter {
   }
 
   /**
-   * Loads a remote URL in the window. Emits "url-loaded" and "navigated" events with the URL as data.
-   * @param {string} url The URL to load.
-   */
-  loadURL(url) { 
-    this.sendCommand("loadURL", [url]); 
-    this.emit("url-loaded", url); 
-    this.emit("navigated", url); 
-  }
-
-  /**
    * Triggers the print dialog for the window. Emits a "print" event. Note that the actual print functionality and dialog is handled by the native layer, so behavior may vary across platforms.
    */
   print() {
@@ -322,13 +312,25 @@ class Window extends Events.EventEmitter {
   }
 
   /**
-   * Loads a local file in the window. Emits "file-loaded" and "navigated" events with the file path as data.
+   * Loads a file into the window. The path can be an absolute file path or a relative path from the application's root directory. Emits a "file-loaded" event with the path as data, and a "navigated" event with the path as data.
    * @param {string} path The path to the file to load.
    */
-  loadFile(path) { 
-    this.sendCommand("loadFile", [path]); 
-    this.emit("file-loaded", path); 
-    this.emit("navigated", path); 
+  async loadFile(path) {
+    const res = await this.request("loadFile", `loadFile-reply-${this.id}`, path);
+    this.emit("file-loaded", path);
+    this.emit("navigated", path);
+    return res;
+  }
+
+  /**
+   * Loads a URL into the window. Emits a "url-loaded" event with the URL as data, and a "navigated" event with the URL as data.
+   * @param {string} url The URL to load.
+   */
+  async loadURL(url) {
+    const res = await this.request("loadURL", `loadURL-reply-${this.id}`, url);
+    this.emit("url-loaded", url);
+    this.emit("navigated", url);
+    return res;
   }
 
   /**
@@ -800,6 +802,135 @@ setTitlebarTransparent(isTransparent) {
 async evaluateJavaScript(script) {
 const res = await this.request("evaluateJS", `evaluateJS-reply-${this.id}`, script);
 return res;
+}
+
+/**
+ * Gets the user agent string of the window. Returns a Promise that resolves to the user agent as a string.
+ * @returns {Promise<string>} The user agent string of the window.
+ */
+async getUserAgent() {
+  const res = await this.evaluateJavaScript("navigator.userAgent");
+  return res;
+}
+
+/**
+ * Sets the style of elements matching a CSS selector. Returns a Promise that resolves when the style has been applied.
+ * @param {string} selector The CSS selector for the elements to style.
+ * @param {Object} style The style properties to apply.
+ * @returns {Promise<void>} A Promise that resolves when the style has been applied.
+ */
+async setStyleOf(selector, style) {
+  const styleString = Object.entries(style).map(([key, value]) => `${key}: ${value};`).join(" ");
+  const script = `
+    const elements = document.querySelectorAll(${JSON.stringify(selector)});
+    elements.forEach(el => {
+      el.style.cssText += ${JSON.stringify(styleString)};
+    });
+  `;
+  await this.evaluateJavaScript(script);
+  this.emit("style-updated", { selector, style });
+}
+
+/**
+ * Sets an attribute of elements matching a CSS selector. Returns a Promise that resolves when the attribute has been set.
+ * @param {string} selector The CSS selector for the elements to update.
+ * @param {string} attribute The name of the attribute to set.
+ * @param {string} value The value to set for the attribute.
+ * @returns {Promise<void>} A Promise that resolves when the attribute has been set.
+ */
+async setAttributeOf(selector, attribute, value) {
+  const script = `
+    const elements = document.querySelectorAll(${JSON.stringify(selector)});
+    elements.forEach(el => {
+      el.setAttribute(${JSON.stringify(attribute)}, ${JSON.stringify(value)});
+    });
+  `;
+  await this.evaluateJavaScript(script);
+  this.emit("attribute-updated", { selector, attribute, value });
+}
+
+/**
+ * Removes an attribute from elements matching a CSS selector. Returns a Promise that resolves when the attribute has been removed.
+ * @param {string} selector The CSS selector for the elements to update.
+ * @param {string} attribute The name of the attribute to remove.
+ * @returns {Promise<void>} A Promise that resolves when the attribute has been removed.
+ */
+async removeAttributeOf(selector, attribute) {
+  const script = `
+    const elements = document.querySelectorAll(${JSON.stringify(selector)});
+    elements.forEach(el => {
+      el.removeAttribute(${JSON.stringify(attribute)});
+    });
+  `;
+  await this.evaluateJavaScript(script);
+  this.emit("attribute-removed", { selector, attribute });
+}
+
+/**
+ * Removes specific style properties from elements matching a CSS selector. Returns a Promise that resolves when the styles have been removed.
+ * @param {string} selector The CSS selector for the elements to update.
+ * @param {string[]} styleProperties The style properties to remove.
+ * @returns {Promise<void>} A Promise that resolves when the styles have been removed.
+ */
+async removeStyleOf(selector, styleProperties) {
+  const propertiesString = styleProperties.map(prop => `${prop}:`).join("|");
+  const script = `
+    const elements = document.querySelectorAll(${JSON.stringify(selector)});
+    elements.forEach(el => {
+      el.style.cssText = el.style.cssText.split(";").filter(rule => {
+        return !${JSON.stringify(propertiesString)}.includes(rule.trim().split(":")[0] + ":");
+      }).join(";");
+    });
+  `;
+  await this.evaluateJavaScript(script);
+  this.emit("style-removed", { selector, styleProperties });
+}
+
+/**
+ * Adds or replaces click handlers that emit IPC events.
+ *
+ * @param {string} selector - The CSS selector for the elements to attach the click handlers to.
+ * @param {string} channel - The IPC channel to emit events on when the elements are clicked.
+ * @param {{ replace?: boolean }} [options] - Optional settings for the click handlers. If `replace` is true, any existing IPC click handlers on the elements will be removed before adding the new handler. If false or omitted, the new handler will be added alongside existing handlers without removing them.
+ * @returns {Promise<void>} A Promise that resolves when the click handlers have been added.
+ */
+async onClick(selector, channel, { replace = true } = {}) {
+  const script = `
+      const selector = ${JSON.stringify(selector)};
+      const channel = ${JSON.stringify(channel)};
+      const replace = ${replace};
+
+      const elements = document.querySelectorAll(selector);
+
+      elements.forEach(el => {
+        if (replace) {
+          el.onclick = () => {
+            window.ipc.send(channel, { selector });
+          }
+        } else {
+        el.addEventListener("click", () => {
+          window.ipc.send(channel, { selector });
+        });  
+        }
+            })
+  `;
+
+  await this.evaluateJavaScript(script);
+}
+
+/**
+ * Removes click handlers that emit IPC events from elements matching the specified CSS selector. This will remove all click handlers that were added via the onClick method for the given selector, regardless of the channel or whether they were set to replace existing handlers.
+ * @param {string} selector The CSS selector for the elements to remove click handlers from.
+ * @returns {Promise<void>} A Promise that resolves when the click handlers have been removed.
+ */
+async removeOnClick(selector) {
+  const script = `
+    const elements = document.querySelectorAll(${JSON.stringify(selector)});
+    elements.forEach(el => {
+      el.onclick = null;
+    });
+  `;
+  await this.evaluateJavaScript(script);
 }
 
 }

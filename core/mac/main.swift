@@ -18,6 +18,7 @@ let AUTH_TOKEN: String = {
 }()
 
 var windowObservations: [Int: NSKeyValueObservation] = [:]
+var navigationDelegates: [Int: WebViewNavigationDelegate] = [:]
 
 
 import Foundation
@@ -225,6 +226,9 @@ func handleCommand(windowId: Int, command: String, args: [String]) {
         config.userContentController.addUserScript(preload)
 
         let webView = PositronWebView(frame: NSRect(origin: .zero, size: frame.size), configuration: config)
+        let navDelegate = WebViewNavigationDelegate(windowId: windowId)
+        webView.navigationDelegate = navDelegate
+        navigationDelegates[windowId] = navDelegate
         // Resize webview automatically when the window resizes
         webView.autoresizingMask = [.width, .height]
         newWindow.contentView = webView
@@ -242,6 +246,7 @@ func handleCommand(windowId: Int, command: String, args: [String]) {
         observation.invalidate()
         windowObservations.removeValue(forKey: windowId)
     }
+            navigationDelegates.removeValue(forKey: windowId)
 
 
             windows.removeValue(forKey: windowId)
@@ -305,7 +310,6 @@ case "forceCloseWindow":
         }
         (window.contentView as? WKWebView)?.load(URLRequest(url: url))
 
-
     case "hide":
         guard let window = windows[windowId] else { return }
         window.orderOut(nil)
@@ -343,7 +347,6 @@ case "forceCloseWindow":
         let fileURL = URL(fileURLWithPath: path)
         (window.contentView as? WKWebView)?
             .loadFileURL(fileURL, allowingReadAccessTo: fileURL.deletingLastPathComponent())
-
 
         case "setBounds":
             guard let window = windows[windowId] else { return }
@@ -679,6 +682,24 @@ case "resetMenu":
         } else {
             printError("Unknown command '\(command)' for window \(windowId)")
         }
+    }
+}
+
+// MARK: - WebView Navigation Delegate
+
+final class WebViewNavigationDelegate: NSObject, WKNavigationDelegate {
+    let windowId: Int
+
+    init(windowId: Int) {
+        self.windowId = windowId
+    }
+
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        let isFile = webView.url?.isFileURL ?? false
+        let eventName = isFile ? "loadFile-reply-\(windowId)" : "loadURL-reply-\(windowId)"
+        AppDelegate.shared?.ipcClient.send(
+            IPCResponse(windowId: windowId, event: eventName, data: [:])
+        )
     }
 }
 

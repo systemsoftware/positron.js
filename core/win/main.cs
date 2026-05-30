@@ -329,6 +329,17 @@ private void StartNodeProcess(string workingDirectory)
                         window.Title = webView.CoreWebView2.DocumentTitle;
                     };
 
+                    webView.CoreWebView2.NavigationCompleted += (s, e) =>
+                    {
+                        bool isFile = webView.Source != null && webView.Source.IsFile;
+                        string eventName = isFile ? $"loadFile-reply-{windowId}" : $"loadURL-reply-{windowId}";
+                        _ipcClient.Send(new IPCResponse
+                        {
+                            windowId = windowId,
+                            @event = eventName
+                        });
+                    };
+
             webView.CoreWebView2.ContextMenuRequested += (s, e) =>
 {
     if (LayoutMap.TryGetValue(windowId, out var l) && l.ContextMenu != null)
