@@ -1,7 +1,7 @@
 const fs = require("fs");
 const path = require("path");
 const cp = require("child_process");
-const { success, error, info } = require("./logs");
+const { success, error, info, warn } = require("./logs");
 
 const arch = process.argv.includes("--x64") ? "x64" : process.argv.includes("--arm64") ? "arm64" : process.arch;
 

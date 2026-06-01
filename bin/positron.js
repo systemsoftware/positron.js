@@ -35,6 +35,6 @@ switch (command) {
     break;
 
   default:
-    console.log("Usage: npx positron [build | dev | run]");
+    console.log("Usage: npx positron [build | dev | run | package]");
     process.exit(0);
 }

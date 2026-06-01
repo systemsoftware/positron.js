@@ -627,7 +627,7 @@ if (timeoutArg) {
 
   args = args.filter(arg => arg !== timeoutArg);
 
-  timeoutDuration = parseInt(timeoutArg.split("=")[1], 10);
+  timeoutDuration = parseInt(timeoutArg.split("=")[1]);
 }
       
     timeout = setTimeout(() => {
@@ -765,7 +765,7 @@ async getBounds() {
  * @returns {Promise<string>} The current URL loaded in the window.
  */
 async getURL() {
-  return await this.request("getURL", `getURL-reply-${this.id}`);
+  return (await this.request("getURL", `getURL-reply-${this.id}`))?.url || "";
 }
 
 /**
@@ -773,7 +773,7 @@ async getURL() {
  * @returns {Promise<string>} The current title of the window.
  */
 async getTitle() {
-  return await this.request("getTitle", `getTitle-reply-${this.id}`);
+  return (await this.request("getTitle", `getTitle-reply-${this.id}`)).title || "";
 }
 
 /**
@@ -801,7 +801,7 @@ setTitlebarTransparent(isTransparent) {
  */
 async evaluateJavaScript(script) {
 const res = await this.request("evaluateJS", `evaluateJS-reply-${this.id}`, script);
-return res;
+return res.result;
 }
 
 /**
@@ -809,8 +809,7 @@ return res;
  * @returns {Promise<string>} The user agent string of the window.
  */
 async getUserAgent() {
-  const res = await this.evaluateJavaScript("navigator.userAgent");
-  return res;
+  return await this.evaluateJavaScript("navigator.userAgent");
 }
 
 /**
@@ -822,10 +821,14 @@ async getUserAgent() {
 async setStyleOf(selector, style) {
   const styleString = Object.entries(style).map(([key, value]) => `${key}: ${value};`).join(" ");
   const script = `
+  (function() { 
     const elements = document.querySelectorAll(${JSON.stringify(selector)});
     elements.forEach(el => {
-      el.style.cssText += ${JSON.stringify(styleString)};
+      Object.entries(${JSON.stringify(style)}).forEach(([key, value]) => {
+        el.style[key] = value;
+      });
     });
+  })();
   `;
   await this.evaluateJavaScript(script);
   this.emit("style-updated", { selector, style });
@@ -840,10 +843,12 @@ async setStyleOf(selector, style) {
  */
 async setAttributeOf(selector, attribute, value) {
   const script = `
+  (function() {
     const elements = document.querySelectorAll(${JSON.stringify(selector)});
     elements.forEach(el => {
       el.setAttribute(${JSON.stringify(attribute)}, ${JSON.stringify(value)});
     });
+  })();
   `;
   await this.evaluateJavaScript(script);
   this.emit("attribute-updated", { selector, attribute, value });
@@ -857,10 +862,12 @@ async setAttributeOf(selector, attribute, value) {
  */
 async removeAttributeOf(selector, attribute) {
   const script = `
-    const elements = document.querySelectorAll(${JSON.stringify(selector)});
-    elements.forEach(el => {
-      el.removeAttribute(${JSON.stringify(attribute)});
-    });
+    (function() {
+      const elements = document.querySelectorAll(${JSON.stringify(selector)});
+      elements.forEach(el => {
+        el.removeAttribute(${JSON.stringify(attribute)});
+      });
+    })();
   `;
   await this.evaluateJavaScript(script);
   this.emit("attribute-removed", { selector, attribute });
@@ -875,12 +882,14 @@ async removeAttributeOf(selector, attribute) {
 async removeStyleOf(selector, styleProperties) {
   const propertiesString = styleProperties.map(prop => `${prop}:`).join("|");
   const script = `
-    const elements = document.querySelectorAll(${JSON.stringify(selector)});
-    elements.forEach(el => {
-      el.style.cssText = el.style.cssText.split(";").filter(rule => {
-        return !${JSON.stringify(propertiesString)}.includes(rule.trim().split(":")[0] + ":");
-      }).join(";");
-    });
+    (function() {
+      const elements = document.querySelectorAll(${JSON.stringify(selector)});
+      elements.forEach(el => {
+        el.style.cssText = el.style.cssText.split(";").filter(rule => {
+          return !${JSON.stringify(propertiesString)}.includes(rule.trim().split(":")[0] + ":");
+        }).join(";");
+      });
+    })();
   `;
   await this.evaluateJavaScript(script);
   this.emit("style-removed", { selector, styleProperties });
@@ -896,6 +905,7 @@ async removeStyleOf(selector, styleProperties) {
  */
 async onClick(selector, channel, { replace = true } = {}) {
   const script = `
+  (function() {
       const selector = ${JSON.stringify(selector)};
       const channel = ${JSON.stringify(channel)};
       const replace = ${replace};
@@ -913,6 +923,7 @@ async onClick(selector, channel, { replace = true } = {}) {
         });  
         }
             })
+  })();
   `;
 
   await this.evaluateJavaScript(script);
@@ -931,6 +942,27 @@ async removeOnClick(selector) {
     });
   `;
   await this.evaluateJavaScript(script);
+}
+
+/**
+ * Displays a confirmation dialog with the given message. Returns a Promise that resolves to true if the user confirmed, or false if the user cancelled. Emits a "confirm" event with the message as data when done.
+ * @param {string} message The message to display in the confirmation dialog.
+ * @returns {Promise<boolean>} True if the user confirmed, false if the user cancelled.
+ */
+async confirm(message) {
+  const res = await this.request("confirm", `confirm-reply-${this.id}`, message);
+  this.emit("confirm", message);
+  return res?.confirmed === "true";
+}
+
+/**
+ * Enables or disables swipe navigation for the window. When enabled, users can navigate back and forward through their history by swiping left or right on a trackpad or touchscreen. Emits a "swipe-navigation-updated" event with the new value when done.
+ * @param {boolean} enabled Whether swipe navigation should be enabled.
+ * @returns {Promise<void>} A Promise that resolves when the swipe navigation setting has been updated.
+ */
+async setSwipeNavigation(enabled) {
+const res = await this.request("setSwipeNav", `setSwipeNav-reply-${this.id}`, String(enabled));
+this.emit("swipe-navigation-updated", enabled);
 }
 
 }
@@ -963,7 +995,7 @@ const app = {
   },
 
   /**
-   * Adds an event listener for application-level events. Supported events include "before-quit" and "quit".
+   * Adds an event listener for application-level events.
    * @param {string} event The name of the event to listen for.
    * @param {Function} listener The callback function to invoke when the event is emitted.
    */
@@ -989,11 +1021,19 @@ const app = {
     this.events.once(event, listener);
   },
 
+  /**
+   * Gets the currently focused window. Returns a Promise that resolves to the focused Window instance, or null if no windows are currently focused. Emits a "focused-window-retrieved" event with the focused window as data when done.
+   * @returns {Promise<Window|null>} The currently focused window, or null if no windows are focused.
+   */
   async getFocusedWindow() {
    const results = await Promise.all([...activeWindows].map(win => win.isFocused().then(isFocused => ({ win, isFocused }))));
    return results.find(({ isFocused }) => isFocused)?.win || null;
   },
 
+  /**
+   * Sets the application name, which is used for things like the user data directory and may be used by the native layer for other purposes.
+   * @param {*} name The new name for the application. This will be converted to a string before being used.
+   */
   setName(name) {
     process.env.POSITRON_APP_NAME = name;
     this.events.emit("name-updated", name);
@@ -1005,6 +1045,10 @@ const app = {
   },
 
 userData: {
+  /**
+   * Gets the path to the user data directory for the application. The path is determined based on the operating system and the application name. If the directory does not exist, it will be created. Emits a "user-data-path-retrieved" event with the path as data when done.
+   * @returns {string} The path to the user data directory.
+   */
   getPath() {
     let userPath = null;
 
@@ -1033,6 +1077,9 @@ userData: {
     return userPath;
   },
 
+  /**
+   * Creates the user data directory if it does not already exist. Emits a "user-data-created" event when the directory is created successfully.
+   */
   create() {
     const userPath = this.getPath();
 
@@ -1041,6 +1088,10 @@ userData: {
       success("User data directory created successfully.");
     }
   },
+
+  /**
+   * Deletes the user data directory and all of its contents. Use with caution, as this will permanently remove all user data for the application. Emits a "user-data-deleted" event when the directory is deleted successfully.
+   */
 
   delete() {
     const userPath = this.getPath();

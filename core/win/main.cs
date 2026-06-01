@@ -384,6 +384,23 @@ private void StartNodeProcess(string workingDirectory)
     layout.ContextMenu = contextMenu;
     break;
 
+    case "setSwipeNav":
+    if (!WindowsMap.TryGetValue(windowId, out var winSwipeNav)) break;
+    var wvSwipeNav = GetWebView(windowId);
+    if (wvSwipeNav != null)    {
+        bool enable = args.Count == 0 || args[0].ToLower() != "false";
+        wvSwipeNav.CoreWebView2.Settings.IsSwipeNavigationEnabled = enable;
+    }
+    
+    GetIPCClient().Send(new IPCResponse
+    {
+        windowId = windowId,
+        @event = "setSwipeNav-reply-" + windowId,
+        data = new() { { "enabled", (wvSwipeNav?.CoreWebView2.Settings.IsSwipeNavigationEnabled ?? false).ToString().ToLower() } }
+    });
+
+    break;
+
                 case "closeWindow":
                     if (WindowsMap.TryGetValue(windowId, out var winToClose))
                         winToClose.Close(); // Triggers Closed → cleanup above
@@ -621,6 +638,24 @@ case "setBounds":
                     }
                     break;
 
+                case "confirm":
+                    if (args.Count < 1)
+                    {
+                        error("confirm — expected message argument");
+                        break;
+                    }
+                    {
+                        var message = args[0];
+                        var result = MessageBox.Show(message, "Confirm", MessageBoxButton.YesNo) == MessageBoxResult.Yes;
+                        _ipcClient.Send(new IPCResponse
+                        {
+                            windowId = windowId,
+                            @event = "confirm-reply-" + windowId,
+                            data = new() { { "confirmed", result.ToString().ToLower() } }
+                        });
+                    }
+                    break;
+
                 case "emitToRenderer":
                     if (args.Count < 2)
                     {
@@ -840,6 +875,15 @@ case "setBounds":
             }
             return null;
         }
+
+        public static Window? GetWindow(int windowId)
+        {
+            if (WindowsMap.TryGetValue(windowId, out var window))
+                return window;
+            return null;
+        }
+
+        public static IPCClient GetIPCClient() => _ipcClient;
 
         // MARK: - Menu Management
 

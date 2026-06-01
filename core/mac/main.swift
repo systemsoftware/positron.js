@@ -169,6 +169,26 @@ struct IPCResponse: Codable {
     let data: [String: String]
 }
 
+ func GetIPCClient() -> IPCClient {
+    return AppDelegate.shared?.ipcClient ?? IPCClient()
+}
+
+func GetWebView(windowId: Int) -> WKWebView? {
+    guard let window = windows[windowId],
+          let webView = window.contentView as? WKWebView else {
+        printError("GetWebView failed: no webview found for window \(windowId)")
+        return nil
+    }
+    return webView
+}
+
+func GetWindow(windowId: Int) -> NSWindow? {
+    guard let window = windows[windowId] else {
+        printError("GetWindow failed: no window found with ID \(windowId)")
+        return nil
+    }
+    return window
+}
 
 // MARK: - Command Handler
 
@@ -271,6 +291,19 @@ func handleCommand(windowId: Int, command: String, args: [String]) {
     guard let window = windows[windowId] else { return }
 
     window.performClose(nil) 
+
+case "setSwipeNav":
+        guard let window = windows[windowId],
+              let webView = window.contentView as? WKWebView else {
+            return
+        }
+        
+        let enable = args.first?.lowercased() != "false"
+        webView.allowsBackForwardNavigationGestures = enable
+
+        GetIPCClient().send(
+            IPCResponse(windowId: windowId, event: "setSwipeNav-reply-\(windowId)", data: ["enabled": enable ? "true" : "false"])
+        )
 
 case "forceCloseWindow":
     guard let window = windows[windowId] else { return }
@@ -604,6 +637,24 @@ UNUserNotificationCenter.current().requestAuthorization(
                     IPCResponse(windowId: windowId, event: "prompt-reply-\(windowId)", data: ["input": ""])
                 )
             }
+        }
+
+    case "confirm":
+        guard let window = windows[windowId] else { return }
+        guard let message = args.first else {
+            printError("confirm — missing message argument")
+            return
+        }
+        let alert = NSAlert()
+        alert.messageText = message
+        alert.addButton(withTitle: "OK")
+        alert.addButton(withTitle: "Cancel")
+
+        alert.beginSheetModal(for: window) { response in
+            let confirmed = (response == .alertFirstButtonReturn)
+            AppDelegate.shared?.ipcClient.send(
+                IPCResponse(windowId: windowId, event: "confirm-reply-\(windowId)", data: ["confirmed": confirmed ? "true" : "false"])
+            )
         }
 
     case "isFocused":
