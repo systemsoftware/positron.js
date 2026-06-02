@@ -144,10 +144,19 @@ function performNativeBuild() {
       });
 
       try {
-        const iconPathEscaped = path.join(__dirname, "positronicon.png").replace(/"/g, '\\"');
+        let swiftScript = "";
+        if(fs.existsSync(path.join(appRoot, "icon.icns"))) {
+           const iconPathEscaped = path.join(appRoot, "icon.icns").replace(/"/g, '\\"');
         const binPathEscaped = path.join(outBinaryDir, binaryName).replace(/"/g, '\\"');
-        const swiftScript = `import Cocoa; NSWorkspace.shared.setIcon(NSImage(contentsOfFile: "${iconPathEscaped}"), forFile: "${binPathEscaped}", options: [])`;
+        swiftScript = `import Cocoa; NSWorkspace.shared.setIcon(NSImage(contentsOfFile: "${iconPathEscaped}"), forFile: "${binPathEscaped}", options: []); `;
         cp.execFileSync("swift", ["-e", swiftScript], { stdio: "ignore" });
+          return true;
+        } else if(fs.existsSync(path.join(__dirname, ['positronicon', 'png'].join('.')))) {
+        const iconPathEscaped = path.join(__dirname, ['positronicon', 'png'].join('.')).replace(/"/g, '\\"');
+        const binPathEscaped = path.join(outBinaryDir, binaryName).replace(/"/g, '\\"');
+        swiftScript = `import Cocoa; NSWorkspace.shared.setIcon(NSImage(contentsOfFile: "${iconPathEscaped}"), forFile: "${binPathEscaped}", options: []);`;
+        }
+         cp.execFileSync("swift", ["-e", swiftScript], { stdio: "ignore" });
       } catch (err) {
         error("Failed to set custom icon on native binary:", err);
       }

@@ -24,7 +24,6 @@ namespace PositronWindows
     
     // MARK: - IPC Message Types
     
-
     public class IPCMessage
     {
         public int windowId { get; set; }
@@ -399,6 +398,41 @@ private void StartNodeProcess(string workingDirectory)
         data = new() { { "enabled", (wvSwipeNav?.CoreWebView2.Settings.IsSwipeNavigationEnabled ?? false).ToString().ToLower() } }
     });
 
+    break;
+
+    case "isSwipeNavEnabled":
+    if (!WindowsMap.TryGetValue(windowId, out var winCheckSwipe)) break;
+    var wvCheckSwipe = GetWebView(windowId);
+    if (wvCheckSwipe != null)    {
+        bool isEnabled = wvCheckSwipe.CoreWebView2.Settings.IsSwipeNavigationEnabled;
+        GetIPCClient().Send(new IPCResponse
+        {
+            windowId = windowId,
+            @event = "isSwipeNavEnabled-reply-" + windowId,
+            data = new() { { "enabled", isEnabled.ToString().ToLower() } }
+        }
+        );
+    }
+    break;
+
+    case "isVisible":
+    if (!WindowsMap.TryGetValue(windowId, out var winVisible)) break;
+    bool isVisible = winVisible.IsVisible;
+    GetIPCClient().Send(new IPCResponse
+    {        windowId = windowId,
+        @event = "isVisible-reply-" + windowId,
+        data = new() { { "isVisible", isVisible.ToString().ToLower() } }
+    });
+    break;
+
+    case "isFullscreen":
+    if (!WindowsMap.TryGetValue(windowId, out var winFullscreen)) break;
+    bool isFullscreen = winFullscreen.WindowState == WindowState.Maximized;
+    GetIPCClient().Send(new IPCResponse
+    {        windowId = windowId,
+        @event = "isFullscreen-reply-" + windowId,
+        data = new() { { "isFullscreen", isFullscreen.ToString().ToLower() } }
+    });
     break;
 
                 case "closeWindow":

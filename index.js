@@ -267,7 +267,8 @@ class Window extends Events.EventEmitter {
    * @param {string} command 
    * @param {string[]} args 
    */
-  sendCommand(command, args = []) {
+  sendCommand(command, ...args) {
+    if(args[0] instanceof Array) args = args[0].concat(args.slice(1));
     const normalizedArgs = Array.isArray(args) ? args.map(String) : [String(args)];
     
     const payload = JSON.stringify({ 
@@ -338,7 +339,7 @@ class Window extends Events.EventEmitter {
    * @param {string} channel The IPC channel to send the message on.
    * @param {string[]} args The arguments to send with the message.
    */
-sendIpc(channel, args = []) {
+emitToRenderer(channel, args = []) {
   if (activeSocket && activeSocket.readyState === WebSocket.OPEN) {
     const payload = JSON.stringify({
       windowId: this.id,
@@ -350,6 +351,15 @@ sendIpc(channel, args = []) {
   } else {
     warn(`Cannot send IPC message, socket not ready. Channel: ${channel}`);
   }
+}
+
+
+/**
+ * @deprecated Use emitToRenderer instead.
+ */
+sendIpc = (channel, args = []) => {
+  warn("sendIpc is deprecated. Use emitToRenderer instead.");
+  this.emitToRenderer(channel, args);
 }
 
  #created = false;
@@ -403,6 +413,10 @@ create(width, height, darwinOptions = {
     this.#created = false;
     activeWindows.delete(this);
     this.sendCommand("forceCloseWindow");
+  }
+
+  isClosed() {
+    return !activeWindows.has(this);
   }
 
 
@@ -488,10 +502,6 @@ resize(width, height) {
  * Opens the developer tools for the window. Emits a "devtools-opened" event when done. Does not work on macOS. For macOS, right-click the window and select "Inspect Element" to open dev tools for that window.
  */
 openDevTools() {
-  if(process.platform === "darwin") {
-    warn("The openDevTools command is not supported on macOS due to OS limitations. Please right-click the window and select 'Inspect Element' to access developer tools.");
-    return;
-  }
   this.sendCommand("openDevTools");
   this.emit("devtools-opened");
 }
@@ -559,6 +569,26 @@ focus() {
   this.sendCommand("focus");
   this.emit("focused");
 }
+
+/**
+ * Checks if the window is currently visible. Returns a Promise that resolves to true if the window is visible, or false if it is hidden. Emits an "is-visible-checked" event with the result as data when done.
+ * @returns {Promise<boolean>} True if the window is visible, false otherwise.
+ */
+async isVisible() {
+  const res = await this.request("isVisible", `isVisible-reply-${this.id}`);
+  return res?.isVisible === "true";
+}
+
+/**
+ * Checks if the window is currently in fullscreen mode.
+ * @returns {Promise<boolean>} True if the window is fullscreen, false otherwise.
+ */
+async isFullscreen() {
+  const res = await this.request("isFullscreen", `isFullscreen-reply-${this.id}`);
+  return res?.isFullscreen === "true";
+}
+
+
 
 /**
  * Reloads the window. Emits a "reloaded" event when done.
@@ -747,6 +777,10 @@ setContextMenu(menuTemplate) {
   this.emit("context-menu-updated", menuTemplate);
 }
 
+/**
+ * Checks if the window is currently focused.
+ * @returns {Promise<boolean>} True if the window is focused, false otherwise.
+ */
 async isFocused() {
   const res = await this.request("isFocused", `isFocused-reply-${this.id}`);
   return res?.isFocused === "true";
@@ -965,6 +999,57 @@ const res = await this.request("setSwipeNav", `setSwipeNav-reply-${this.id}`, St
 this.emit("swipe-navigation-updated", enabled);
 }
 
+/**
+ * Checks if swipe navigation is enabled for the window. Returns a Promise that resolves to true if swipe navigation is enabled, or false if it is disabled. Emits an "is-swipe-navigation-enabled-checked" event with the result as data when done.
+ * @returns {Promise<boolean>} True if swipe navigation is enabled, false otherwise.
+ */
+async isSwipeNavigationEnabled() {
+  const res = await this.request("isSwipeNavEnabled", `isSwipeNavEnabled-reply-${this.id}`);
+  return res?.enabled === "true";
+}
+
+/**
+ * Adds content blocker rules to the window. The rules can be provided as a JSON object, loaded from a URL that returns JSON, or loaded from a local file. 
+ * Once the rules are added, the window will block content according to the specified rules. Emits a "content-blocker-updated" event with the new rules as data when done.
+ * @param {Object} config The configuration for adding content blocker rules.
+ * @param {Object[]} [config.json] An array of content blocker rules as JSON objects. Each rule should follow the format specified by the native layer's content blocking implementation.
+ * @param {string} [config.url] A URL that returns a JSON array of content blocker rules. If provided, the rules will be loaded from this URL instead of using the `json` property.
+ * @param {string} [config.file] A local file path containing the content blocker rules in JSON format. If provided, the rules will be loaded from this file instead of using the `json` or `url` properties.
+ * @param {boolean} [config.reload] Whether to reload the window after adding the content blocker rules. Reloading may be necessary for the new rules to take effect immediately, but it can also be set to false if you want to add rules without interrupting the user's current session.
+ * @param {boolean} [config.clearExisting] Whether to clear existing content blocker rules before adding the new ones. If false, the new rules will be added alongside any existing rules. If true, all existing rules will be removed before adding the new ones.
+ * @platform macOS only
+ * @see https://webkit.org/blog/3476/content-blockers-first-look/
+ */
+async addToContentBlocker(config={ json:[], url:"", file:"", reload:true, clearExisting: false }) {
+
+  if(process.platform !== "darwin") return;
+
+  let json = config.json || [];
+
+  if(config.file) {
+    json = config.file
+  } else {
+  if(config.url) {
+    let req = (await fetch(config.url));
+    let _json = await req.json();
+
+    if(json.length) {
+      json = json.concat(_json);
+    } else {
+      json = _json;
+    }
+  }
+
+  json = JSON.stringify(json);
+}
+
+
+  const res = await this.request("addToContentBlocker", `addToContentBlocker-reply-${this.id}`, json, config.reload, config.clearExisting);
+  this.emit("content-blocker-updated", json);
+}
+
+
+
 }
 
 const app = {
@@ -1047,9 +1132,10 @@ const app = {
 userData: {
   /**
    * Gets the path to the user data directory for the application. The path is determined based on the operating system and the application name. If the directory does not exist, it will be created. Emits a "user-data-path-retrieved" event with the path as data when done.
+   * @param {string} [append] An optional string to append to the user data path. This can be used to create subdirectories within the user data directory for organizing different types of data. If provided, the appended path will also be created if it does not exist.
    * @returns {string} The path to the user data directory.
    */
-  getPath() {
+  getPath(append) {
     let userPath = null;
 
     if (process.platform === "win32") {
@@ -1074,7 +1160,7 @@ userData: {
       fs.mkdirSync(userPath, { recursive: true });
   }
 
-    return userPath;
+    return append ? path.join(userPath, append) : userPath;
   },
 
   /**

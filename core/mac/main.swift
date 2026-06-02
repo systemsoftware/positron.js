@@ -141,13 +141,9 @@ func getBuiltInHandlers() -> [String: (Int, [String]) -> Void] {
             return 
         }
         
-        let selector = Selector(("_showDeveloperTools:"))
-        if webView.responds(to: selector) {
-            webView.perform(selector, with: nil)
-        } else {
-            printError("openDevTools failed: _showDeveloperTools: selector not found on WKWebView (windowId \(windowId))")
+            let inspector = webView.value(forKey: "inspector") as? NSObject
+            inspector?.perform(NSSelectorFromString("show"))
         }
-        },
     ]
     
     return baseHandlers + getExtensionRegistry()
@@ -291,6 +287,13 @@ func handleCommand(windowId: Int, command: String, args: [String]) {
     guard let window = windows[windowId] else { return }
 
     window.performClose(nil) 
+
+case "isFullscreen":
+    guard let window = windows[windowId] else { return }
+    let isFullscreen = window.styleMask.contains(.fullScreen)
+    AppDelegate.shared?.ipcClient.send(
+        IPCResponse(windowId: windowId, event: "isFullscreen-reply-\(windowId)", data: ["isFullscreen": isFullscreen ? "true" : "false"])
+    )
 
 case "setSwipeNav":
         guard let window = windows[windowId],
@@ -520,6 +523,97 @@ UNUserNotificationCenter.current().requestAuthorization(
                 let errorMessage = errorInfo[NSAppleScript.errorMessage] as? String ?? "Unknown error"
                 printError("executeAppleScript failed: \(errorMessage)")
             }
+
+case "isVisible":
+    guard let window = windows[windowId] else { return }
+    let isVisible = window.isVisible
+    AppDelegate.shared?.ipcClient.send(
+        IPCResponse(windowId: windowId, event: "isVisible-reply-\(windowId)", data: ["isVisible": isVisible ? "true" : "false"])
+    )
+
+case "addToContentBlocker":
+    guard let window = windows[windowId],
+          let webView = window.contentView as? WKWebView,
+          let input = args.first
+    else {
+        printError("addToContentBlocker — missing rules")
+        return
+    }
+
+    let jsonStr: String
+
+    if FileManager.default.fileExists(atPath: input) {
+        do {
+            jsonStr = try String(contentsOfFile: input, encoding: .utf8)
+        } catch {
+            printError("Failed to read rule file: \(error.localizedDescription)")
+            return
+        }
+    } else {
+        jsonStr = input
+    }
+
+    guard let data = jsonStr.data(using: .utf8),
+          (try? JSONSerialization.jsonObject(with: data)) != nil
+    else {
+        printError("addToContentBlocker — invalid JSON rules")
+        return
+    }
+
+    let reload = args.count > 1
+        ? args[1].lowercased() == "true"
+        : true
+
+    let clearAll = args.count > 2
+        ? args[2].lowercased() == "true"
+        : false
+
+    let identifier = "dynamicRules-\(windowId)-\(UUID().uuidString)"
+
+    WKContentRuleListStore.default().compileContentRuleList(
+        forIdentifier: identifier,
+        encodedContentRuleList: jsonStr
+    ) { [weak webView] ruleList, error in
+
+        guard let webView else { return }
+
+        if let error {
+            printError("Failed to compile content blocker rules: \(error.localizedDescription)")
+            return
+        }
+
+        guard let ruleList else {
+            printError("Failed to compile content blocker rules: no rule list returned")
+            return
+        }
+
+        let controller = webView.configuration.userContentController
+
+        if clearAll {
+            controller.removeAllContentRuleLists()
+        }
+
+        controller.add(ruleList)
+
+        if reload {
+            webView.reload()
+        }
+    }
+
+    GetIPCClient().send(
+        IPCResponse(windowId: windowId, event: "addToContentBlocker-reply-\(windowId)", data: ["status": "success"])
+    )
+
+        case "isSwipeNavEnabled":
+            guard let window = windows[windowId],
+                  let webView = window.contentView as? WKWebView else {
+                printError("isSwipeNavEnabled — webview not found for window \(windowId)")
+                return
+            }
+            let enabled = webView.allowsBackForwardNavigationGestures
+            AppDelegate.shared?.ipcClient.send(
+                IPCResponse(windowId: windowId, event: "isSwipeNavEnabled-reply-\(windowId)", data: ["enabled": enabled ? "true" : "false"])
+            )
 
        case "forward":
            guard let window = windows[windowId] else { return }
@@ -1067,6 +1161,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     editMenu.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
     editMenu.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
 
+    // Window menu
+    let windowMenuItem = NSMenuItem()
+    mainMenu.addItem(windowMenuItem)
+    let windowMenu = NSMenu(title: "Window")
+    windowMenuItem.submenu = windowMenu
+    windowMenu.addItem(withTitle: "Minimize", action: #selector(NSWindow.miniaturize(_:)), keyEquivalent: "m")
+    windowMenu.addItem(withTitle: "Zoom", action: #selector(NSWindow.zoom(_:)), keyEquivalent: "")
+    NSApp.windowsMenu = windowMenu
+
     NSApp.mainMenu = mainMenu
 }
 }
@@ -1144,6 +1247,12 @@ func buildMenu(from descriptor: [[String: Any]], windowId: Int) -> NSMenu {
 
         let sub = NSMenu(title: topItem.title)
         topItem.submenu = sub
+
+        if let role = topLevel["role"] as? String, role.lowercased() == "window" {
+            NSApp.windowsMenu = sub
+        } else if topItem.title.lowercased() == "window" {
+            NSApp.windowsMenu = sub
+        }
 
         if let items = topLevel["items"] as? [[String: Any]] {
             populateMenu(sub, with: items, windowId: windowId, isContextMenu: false)
