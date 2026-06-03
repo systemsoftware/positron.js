@@ -5,6 +5,7 @@ const performPackager = require("../packager");
 const { spawn } = require("child_process");
 const [, , command] = process.argv;
 const { info, success, error } = require("../logs");
+const fs = require("fs");
 
 switch (command) {
   case "build":
@@ -15,7 +16,11 @@ switch (command) {
 
   case "dev":
     info("Starting Positron in development mode...");
-    performNativeBuild();
+    const buildSuccess = performNativeBuild();
+    if (!buildSuccess) {
+      error("Development build failed. Please fix the errors and try again.");
+      process.exit(1);
+    }
     spawn("node", ["."], { stdio: "inherit" });
     break;
 

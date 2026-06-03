@@ -5,7 +5,7 @@
     "url": "https://github.com/systemsoftware/positron.js"
   },
   "homepage": "https://positronjs.gitbook.io",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "main": "index.js",
   "scripts": {
     "test": "node --test"
@@ -13,7 +13,13 @@
   "keywords": [
     "app",
     "framework",
-    "desktop"
+    "desktop",
+    "cross-platform",
+    "native",
+    "javascript",
+    "node",
+    "macos",
+    "windows"
   ],
   "author": "Bryce",
   "license": "MIT",
@@ -21,6 +27,7 @@
   "dependencies": {
     "@yao-pkg/pkg": "^6.20.0",
     "esbuild": "^0.28.0",
+    "semver": "^7.8.1",
     "ws": "^8.20.1"
   },
   "bin": {

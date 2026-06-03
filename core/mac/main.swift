@@ -3,6 +3,9 @@ import WebKit
 import Network
 import Darwin
 import UserNotifications
+import Foundation
+import IOKit.pwr_mgt
+
 
 // MARK: - Globals
 
@@ -20,8 +23,31 @@ let AUTH_TOKEN: String = {
 var windowObservations: [Int: NSKeyValueObservation] = [:]
 var navigationDelegates: [Int: WebViewNavigationDelegate] = [:]
 
+private var assertionID: IOPMAssertionID?
 
-import Foundation
+func blockPowerSave() {
+    guard assertionID == nil else { return }
+
+    var id: IOPMAssertionID = 0
+
+    let result = IOPMAssertionCreateWithName(
+        kIOPMAssertionTypePreventUserIdleSystemSleep as CFString,
+        IOPMAssertionLevel(kIOPMAssertionLevelOn),
+        "Power Save Blocked" as CFString,
+        &id
+    )
+
+    if result == kIOReturnSuccess {
+        assertionID = id
+    } 
+}
+
+func unblockPowerSave() {
+    guard let id = assertionID else { return }
+
+    IOPMAssertionRelease(id)
+    assertionID = nil
+}
 
 final class PositronWebView: WKWebView {
     override func rightMouseDown(with event: NSEvent) {
@@ -292,7 +318,7 @@ case "isFullscreen":
     guard let window = windows[windowId] else { return }
     let isFullscreen = window.styleMask.contains(.fullScreen)
     AppDelegate.shared?.ipcClient.send(
-        IPCResponse(windowId: windowId, event: "isFullscreen-reply-\(windowId)", data: ["isFullscreen": isFullscreen ? "true" : "false"])
+        IPCResponse(windowId: windowId, event: args.last ?? "isFullscreen-reply-\(windowId)", data: ["isFullscreen": isFullscreen ? "true" : "false"])
     )
 
 case "setSwipeNav":
@@ -305,7 +331,7 @@ case "setSwipeNav":
         webView.allowsBackForwardNavigationGestures = enable
 
         GetIPCClient().send(
-            IPCResponse(windowId: windowId, event: "setSwipeNav-reply-\(windowId)", data: ["enabled": enable ? "true" : "false"])
+            IPCResponse(windowId: windowId, event: args.last ?? "setSwipeNav-reply-\(windowId)", data: ["enabled": enable ? "true" : "false"])
         )
 
 case "forceCloseWindow":
@@ -402,7 +428,7 @@ case "forceCloseWindow":
             let frame = window.frame
             let bounds = ["x": "\(Int(frame.origin.x))", "y": "\(Int(frame.origin.y))", "width": "\(Int(frame.size.width))", "height": "\(Int(frame.size.height))"]
             AppDelegate.shared?.ipcClient.send(
-                IPCResponse(windowId: windowId, event: "getBounds-reply-\(windowId)", data: bounds)
+                IPCResponse(windowId: windowId, event: args.last ?? "getBounds-reply-\(windowId)", data: bounds)
             )
 
         case "setResizable":
@@ -461,15 +487,63 @@ case "forceCloseWindow":
                 guard let window = windows[windowId] else { return }
                 let canGoBack = (window.contentView as? WKWebView)?.canGoBack ?? false
                 AppDelegate.shared?.ipcClient.send(
-                    IPCResponse(windowId: windowId, event: "canGoBack-reply-\(windowId)", data: ["canGoBack": canGoBack ? "true" : "false"])
+                    IPCResponse(windowId: windowId, event: args.last ?? "canGoBack-reply-\(windowId)", data: ["canGoBack": canGoBack ? "true" : "false"])
                 )
 
             case "canGoForward":
                 guard let window = windows[windowId] else { return }
                 let canGoForward = (window.contentView as? WKWebView)?.canGoForward ?? false
                 AppDelegate.shared?.ipcClient.send(
-                    IPCResponse(windowId: windowId, event: "canGoForward-reply-\(windowId)", data: ["canGoForward": canGoForward ? "true" : "false"])
+                    IPCResponse(windowId: windowId, event: args.last ?? "canGoForward-reply-\(windowId)", data: ["canGoForward": canGoForward ? "true" : "false"])
                 )
+
+            case "showFileOpenDialog":
+                guard let window = windows[windowId] else { return }
+                let panel = NSOpenPanel()
+                panel.allowsMultipleSelection = false
+                panel.canChooseDirectories = false
+                panel.canChooseFiles = true
+                panel.beginSheetModal(for: window) { response in
+                    if response == .OK, let url = panel.url {
+                        AppDelegate.shared?.ipcClient.send(
+                            IPCResponse(windowId: windowId, event: args.last ?? "showFileOpenDialog-reply-\(windowId)", data: ["filePath": url.path])
+                        )
+                    } else {
+                        AppDelegate.shared?.ipcClient.send(
+                            IPCResponse(windowId: windowId, event: args.last ?? "showFileOpenDialog-reply-\(windowId)", data: ["filePath": ""])
+                        )
+                    }
+                }
+
+            case "readFromClipboard":
+                let pasteboard = NSPasteboard.general
+                let clipboardText = pasteboard.string(forType: .string) ?? "notext"
+                AppDelegate.shared?.ipcClient.send(
+                    IPCResponse(windowId: windowId, event: args.last ?? "readFromClipboard-reply-\(windowId)", data: ["text": clipboardText])
+                )
+
+            case "blockPowerSave":
+                blockPowerSave()
+
+            case "unblockPowerSave":
+                unblockPowerSave()
+
+     case "isDarkMode":
+    guard let window = windows[windowId] else { return }
+    let isDarkMode = window.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+    AppDelegate.shared?.ipcClient.send(
+        IPCResponse(windowId: windowId, event: args.last ?? "isDarkMode-reply-\(windowId)", data: ["isDarkMode": isDarkMode ? "true" : "false"])
+    )
+
+
+            case "writeToClipboard":
+                guard let text = args.first else {
+                    printError("writeToClipboard — missing text argument")
+                    return
+                }
+                let pasteboard = NSPasteboard.general
+                pasteboard.clearContents()
+                pasteboard.setString(text, forType: .string)
 
             case "showNotification":
 
@@ -501,14 +575,14 @@ UNUserNotificationCenter.current().requestAuthorization(
             guard let window = windows[windowId] else { return }
             let url = (window.contentView as? WKWebView)?.url?.absoluteString ?? ""
             AppDelegate.shared?.ipcClient.send(
-                IPCResponse(windowId: windowId, event: "getURL-reply-\(windowId)", data: ["url": url])
+                IPCResponse(windowId: windowId, event: args.last ?? "getURL-reply-\(windowId)", data: ["url": url])
             )
 
         case "getTitle":
             guard let window = windows[windowId] else { return }
             let title = window.title
             AppDelegate.shared?.ipcClient.send(
-                IPCResponse(windowId: windowId, event: "getTitle-reply-\(windowId)", data: ["title": title])
+                IPCResponse(windowId: windowId, event: args.last ?? "getTitle-reply-\(windowId)", data: ["title": title])
             )
 
         case "executeAppleScript":
@@ -528,7 +602,7 @@ case "isVisible":
     guard let window = windows[windowId] else { return }
     let isVisible = window.isVisible
     AppDelegate.shared?.ipcClient.send(
-        IPCResponse(windowId: windowId, event: "isVisible-reply-\(windowId)", data: ["isVisible": isVisible ? "true" : "false"])
+        IPCResponse(windowId: windowId, event: args.last ?? "isVisible-reply-\(windowId)", data: ["isVisible": isVisible ? "true" : "false"])
     )
 
 case "addToContentBlocker":
@@ -601,7 +675,7 @@ case "addToContentBlocker":
     }
 
     GetIPCClient().send(
-        IPCResponse(windowId: windowId, event: "addToContentBlocker-reply-\(windowId)", data: ["status": "success"])
+        IPCResponse(windowId: windowId, event: args.last ?? "addToContentBlocker-reply-\(windowId)", data: ["status": "success"])
     )
 
         case "isSwipeNavEnabled":
@@ -612,7 +686,7 @@ case "addToContentBlocker":
             }
             let enabled = webView.allowsBackForwardNavigationGestures
             AppDelegate.shared?.ipcClient.send(
-                IPCResponse(windowId: windowId, event: "isSwipeNavEnabled-reply-\(windowId)", data: ["enabled": enabled ? "true" : "false"])
+                IPCResponse(windowId: windowId, event: args.last ?? "isSwipeNavEnabled-reply-\(windowId)", data: ["enabled": enabled ? "true" : "false"])
             )
 
        case "forward":
@@ -698,7 +772,7 @@ case "addToContentBlocker":
                 resultStr = "null"
             }
             AppDelegate.shared?.ipcClient.send(
-                IPCResponse(windowId: windowId, event: "evaluateJS-reply-\(windowId)", data: ["result": resultStr])
+                IPCResponse(windowId: windowId, event: args.last ?? "evaluateJS-reply-\(windowId)", data: ["result": resultStr])
             )
         }
 
@@ -724,11 +798,11 @@ case "addToContentBlocker":
             if response == .alertFirstButtonReturn {
                 let userInput = inputField.stringValue
                 AppDelegate.shared?.ipcClient.send(
-                    IPCResponse(windowId: windowId, event: "prompt-reply-\(windowId)", data: ["input": userInput])
+                    IPCResponse(windowId: windowId, event: args.last ?? "prompt-reply-\(windowId)", data: ["input": userInput])
                 )
             } else {
                 AppDelegate.shared?.ipcClient.send(
-                    IPCResponse(windowId: windowId, event: "prompt-reply-\(windowId)", data: ["input": ""])
+                    IPCResponse(windowId: windowId, event: args.last ?? "prompt-reply-\(windowId)", data: ["input": ""])
                 )
             }
         }
@@ -747,7 +821,7 @@ case "addToContentBlocker":
         alert.beginSheetModal(for: window) { response in
             let confirmed = (response == .alertFirstButtonReturn)
             AppDelegate.shared?.ipcClient.send(
-                IPCResponse(windowId: windowId, event: "confirm-reply-\(windowId)", data: ["confirmed": confirmed ? "true" : "false"])
+                IPCResponse(windowId: windowId, event: args.last ?? "confirm-reply-\(windowId)", data: ["confirmed": confirmed ? "true" : "false"])
             )
         }
 
@@ -755,7 +829,7 @@ case "addToContentBlocker":
         guard let window = windows[windowId] else { return }
         let isFocused = window.isKeyWindow
         AppDelegate.shared?.ipcClient.send(
-            IPCResponse(windowId: windowId, event: "isFocused-reply-\(windowId)", data: ["isFocused": isFocused ? "true" : "false"])
+            IPCResponse(windowId: windowId, event: args.last ??  "isFocused-reply-\(windowId)", data: ["isFocused": isFocused ? "true" : "false"])
         )
 
     case "emitToRenderer":
@@ -843,7 +917,7 @@ final class WebViewNavigationDelegate: NSObject, WKNavigationDelegate {
         let isFile = webView.url?.isFileURL ?? false
         let eventName = isFile ? "loadFile-reply-\(windowId)" : "loadURL-reply-\(windowId)"
         AppDelegate.shared?.ipcClient.send(
-            IPCResponse(windowId: windowId, event: eventName, data: [:])
+            IPCResponse(windowId: windowId, event: eventName, data: ["url": webView.url?.absoluteString ?? "", "title": webView.title ?? "", "canGoBack": (webView.canGoBack ? "true" : "false"), "canGoForward": (webView.canGoForward ? "true" : "false")])
         )
     }
 }
@@ -1088,8 +1162,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         
         cd "\(resourcePath)"
         
-        if [ -f "positron-backend" ]; then
-            exec "./positron-backend"
+        BACKEND_BIN=$(find . -maxdepth 1 -name "*-backend" | head -n 1)
+        if [ -n "$BACKEND_BIN" ] && [ -f "$BACKEND_BIN" ]; then
+            exec "$BACKEND_BIN"
         else
             exec "node" "."
         fi
@@ -1311,20 +1386,22 @@ setbuf(__stdoutp, nil)
 setbuf(__stderrp, nil)
 
 signal(SIGINT) { _ in
-    printError("INFO: Received SIGINT, shutting down…")
     AppDelegate.shared?.nodeProcess?.terminate()
+    unblockPowerSave()
     exit(0)
 }
 
 signal(SIGTERM) { _ in
     printError("INFO: Received SIGTERM, shutting down…")
     AppDelegate.shared?.nodeProcess?.terminate()
+    unblockPowerSave()
     exit(0)
 } 
 
 signal(SIGSEGV) { _ in
     printError("ERROR: Caught SIGSEGV (segmentation fault). This likely indicates a bug in the native code. Attempting to shut down gracefully…")
     AppDelegate.shared?.nodeProcess?.terminate()
+    unblockPowerSave()
     signal(SIGSEGV, SIG_DFL)
     raise(SIGSEGV)
 }

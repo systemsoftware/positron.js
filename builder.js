@@ -2,6 +2,7 @@ const fs = require("fs");
 const path = require("path");
 const cp = require("child_process");
 const { success, error, info, warn } = require("./logs");
+const semver = require("semver");
 
 const arch = process.argv.includes("--x64") ? "x64" : process.argv.includes("--arm64") ? "arm64" : process.arch;
 
@@ -29,6 +30,18 @@ function performNativeBuild() {
       const depPackage = JSON.parse(fs.readFileSync(depPackagePath, "utf8"));
       if (depPackage.positron) {
         const depDir = path.dirname(depPackagePath);
+
+        if(depPackage.positron.requiredVersion) {
+          const requiredVersion = depPackage.positron.requiredVersion;
+          const rootVersion = rootPackage.dependencies["positron.js"];
+          if(rootVersion.startsWith("file:")) {
+            warn(`[Builder] Dependency "${dep}" specifies a required positron.js version of ${requiredVersion}, but the project is using a local file reference. Skipping version compatibility check for this dependency.`);
+          } else {
+          if(!semver.satisfies(rootVersion, requiredVersion)) {
+            warn(`[Builder] Dependency "${dep}" requires positron.js version ${requiredVersion}, but the project has version ${rootVersion}. This may lead to compatibility issues.`);
+          }
+        }
+        } 
 
           let missing = [];
           if(!depPackage.positron.className) missing.push("className");

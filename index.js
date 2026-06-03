@@ -317,7 +317,7 @@ class Window extends Events.EventEmitter {
    * @param {string} path The path to the file to load.
    */
   async loadFile(path) {
-    const res = await this.request("loadFile", `loadFile-reply-${this.id}`, path);
+    const res = await this.request("loadFile", { replyChannel: `loadFile-reply-${this.id}` }, path);
     this.emit("file-loaded", path);
     this.emit("navigated", path);
     return res;
@@ -328,7 +328,7 @@ class Window extends Events.EventEmitter {
    * @param {string} url The URL to load.
    */
   async loadURL(url) {
-    const res = await this.request("loadURL", `loadURL-reply-${this.id}`, url);
+    const res = await this.request("loadURL", { replyChannel: `loadURL-reply-${this.id}` }, url);
     this.emit("url-loaded", url);
     this.emit("navigated", url);
     return res;
@@ -349,7 +349,7 @@ emitToRenderer(channel, args = []) {
     activeSocket.send(payload);
     this.emit("ipc-sent", { channel, args });
   } else {
-    warn(`Cannot send IPC message, socket not ready. Channel: ${channel}`);
+    warn(`Cannot send IPC message on ${channel}, socket not ready.`);
   }
 }
 
@@ -575,7 +575,7 @@ focus() {
  * @returns {Promise<boolean>} True if the window is visible, false otherwise.
  */
 async isVisible() {
-  const res = await this.request("isVisible", `isVisible-reply-${this.id}`);
+  const res = await this.request("isVisible");
   return res?.isVisible === "true";
 }
 
@@ -584,7 +584,7 @@ async isVisible() {
  * @returns {Promise<boolean>} True if the window is fullscreen, false otherwise.
  */
 async isFullscreen() {
-  const res = await this.request("isFullscreen", `isFullscreen-reply-${this.id}`);
+  const res = await this.request("isFullscreen");
   return res?.isFullscreen === "true";
 }
 
@@ -603,7 +603,7 @@ reload() {
  * @returns {Promise<Buffer|null>} The captured screenshot as a Buffer, or null if the capture failed.
  */
 async capturePage() {
- const response = await this.request("capturePage", `capture-page-result-${this.id}`);
+ const response = await this.request("capturePage", { replyChannel: `capture-page-result-${this.id}` });
  return response.image ? Buffer.from(response.image, "base64") : null;
 }
 
@@ -612,52 +612,94 @@ async capturePage() {
  * @returns {Promise<boolean>} True if the window can navigate back, false otherwise.
  */
 async canGoBack() {
- const response = await this.request("canGoBack", `canGoBack-reply-${this.id}`);
+ const response = await this.request("canGoBack");
  return response === "true";
 }
 
+// @ts-check
+
 /**
- * Sends a request/response command to the native layer. The command will be sent, and the method will wait for a response on the specified reply channel. Once a response is received, the promise will resolve with the reply data.
- * @param {string} command The command to send.
- * @param {string} replyChannel The channel to listen for the reply on.
- * @returns {Promise<*>} A promise that resolves to the reply data.
+ * @typedef {Object} RequestOptions
+ * @property {number} [timeout]
+ * @property {boolean} [noTimeout]
+ * @property {string} [replyChannel]
  */
-async request(command, replyChannel, ...args) {
+
+/**
+ * @overload
+ * @param {string} command
+ * @param {...any} args
+ * @returns {Promise<any>}
+ */
+
+/**
+ * @overload
+ * @param {string} command
+ * @param {RequestOptions} options
+ * @param {...any} args
+ * @returns {Promise<any>}
+ */
+
+/**
+ * Send an IPC request.
+ * @param {string} command
+ * @param {...any} args
+ */
+async request(command, ...args) {
   return new Promise((resolve, reject) => {
     let settled = false;
+
+    let options = {};
+
+    if(typeof args[0] === "object" && args[0].constructor === Object) {
+      options = args[0];
+      args = args.slice(1);
+    }
 
     if(!command) {
       reject(new Error("Command is required for request"));
       return;
     }
 
-    if(!replyChannel) {
-      replyChannel = `${command}-reply-${this.id}`;
-    }
+    const reqId = crypto.randomUUID();
+
+    let replyChannel = `${command}-reply-${reqId}`;
+
+  if (options.replyChannel) {
+  replyChannel = options.replyChannel;
+} else if(args[0] && (args[0].includes("-reply-") || args[0].includes("-result-"))) {
+  // TEMP TRANSITIONAL LOGIC TO SUPPORT LEGACY REQUESTS THAT PASS REPLY CHANNEL AS FIRST ARGUMENT. WILL BE REMOVED IN A FUTURE RELEASE.
+  replyChannel = args[0];
+}
 
     const unsubscribe = ipc.handle(replyChannel, (data) => {
       if (!settled) {
         settled = true;
         clearTimeout(timeout);
         unsubscribe();
+
+        for (const key in data) {
+          if (data[key] === "true") {
+            data[key] = true;
+          } else if (data[key] === "false") {
+            data[key] = false;
+          } else if (!isNaN(data[key])) {
+            data[key] = Number(data[key]);
+          }
+        } 
+
         resolve(data);
       }
     });
 
     let timeout;
 
-    if(!args.includes("NO_TIMEOUT")) {
+    if(!options.noTimeout) {
       let timeoutDuration = 7000;
-     
-      const timeoutArg = args.find(
-  arg => typeof arg === "string" && arg.startsWith("TIMEOUT=")
-);
+  
 
-if (timeoutArg) {
-
-  args = args.filter(arg => arg !== timeoutArg);
-
-  timeoutDuration = parseInt(timeoutArg.split("=")[1]);
+if (options.timeout) {
+  timeoutDuration = options.timeout;
 }
       
     timeout = setTimeout(() => {
@@ -680,7 +722,7 @@ if (timeoutArg) {
  * @returns {Promise<boolean>} True if the window can navigate forward, false otherwise.
  */
 async canGoForward() {
-  const response = await this.request("canGoForward", `canGoForward-reply-${this.id}`);
+  const response = await this.request("canGoForward");
   return response === "true";
 }
 
@@ -745,7 +787,7 @@ setBounds(x, y, width, height) {
  * @returns {Promise<string|null>} The user's input as a string, or null if the user cancelled the prompt.
  */
 async prompt(message, defaultValue = "") {
-  const res = await this.request("prompt", `prompt-reply-${this.id}`, message, defaultValue);
+  const res = await this.request("prompt", message, defaultValue);
   this.emit("prompt", { message, defaultValue });
   return res?.input;
 }
@@ -782,7 +824,7 @@ setContextMenu(menuTemplate) {
  * @returns {Promise<boolean>} True if the window is focused, false otherwise.
  */
 async isFocused() {
-  const res = await this.request("isFocused", `isFocused-reply-${this.id}`);
+  const res = await this.request("isFocused");
   return res?.isFocused === "true";
 }
 
@@ -791,7 +833,7 @@ async isFocused() {
  * @returns {Promise<{x: number, y: number, width: number, height: number}>} An object containing the window's bounds.
  */
 async getBounds() {
-  return await this.request("getBounds", `getBounds-reply-${this.id}`);
+  return await this.request("getBounds");
 }
 
 /**
@@ -799,7 +841,7 @@ async getBounds() {
  * @returns {Promise<string>} The current URL loaded in the window.
  */
 async getURL() {
-  return (await this.request("getURL", `getURL-reply-${this.id}`))?.url || "";
+  return (await this.request("getURL"))?.url || "";
 }
 
 /**
@@ -807,7 +849,7 @@ async getURL() {
  * @returns {Promise<string>} The current title of the window.
  */
 async getTitle() {
-  return (await this.request("getTitle", `getTitle-reply-${this.id}`)).title || "";
+  return (await this.request("getTitle"))?.title || "";
 }
 
 /**
@@ -834,7 +876,7 @@ setTitlebarTransparent(isTransparent) {
  * @returns {Promise<*>} A Promise that resolves to the result of the evaluation.
  */
 async evaluateJavaScript(script) {
-const res = await this.request("evaluateJS", `evaluateJS-reply-${this.id}`, script);
+const res = await this.request("evaluateJS", script);
 return res.result;
 }
 
@@ -984,7 +1026,7 @@ async removeOnClick(selector) {
  * @returns {Promise<boolean>} True if the user confirmed, false if the user cancelled.
  */
 async confirm(message) {
-  const res = await this.request("confirm", `confirm-reply-${this.id}`, message);
+  const res = await this.request("confirm", message);
   this.emit("confirm", message);
   return res?.confirmed === "true";
 }
@@ -995,7 +1037,7 @@ async confirm(message) {
  * @returns {Promise<void>} A Promise that resolves when the swipe navigation setting has been updated.
  */
 async setSwipeNavigation(enabled) {
-const res = await this.request("setSwipeNav", `setSwipeNav-reply-${this.id}`, String(enabled));
+const res = await this.request("setSwipeNav", String(enabled));
 this.emit("swipe-navigation-updated", enabled);
 }
 
@@ -1004,7 +1046,7 @@ this.emit("swipe-navigation-updated", enabled);
  * @returns {Promise<boolean>} True if swipe navigation is enabled, false otherwise.
  */
 async isSwipeNavigationEnabled() {
-  const res = await this.request("isSwipeNavEnabled", `isSwipeNavEnabled-reply-${this.id}`);
+  const res = await this.request("isSwipeNavEnabled");
   return res?.enabled === "true";
 }
 
@@ -1044,10 +1086,19 @@ async addToContentBlocker(config={ json:[], url:"", file:"", reload:true, clearE
 }
 
 
-  const res = await this.request("addToContentBlocker", `addToContentBlocker-reply-${this.id}`, json, config.reload, config.clearExisting);
+  const res = await this.request("addToContentBlocker", json, config.reload, config.clearExisting);
   this.emit("content-blocker-updated", json);
 }
 
+/**
+ * Displays a file open dialog and returns a Promise that resolves to an array of selected file paths, or null if the user cancelled the dialog.
+ * @param {*} options The options for the file open dialog.
+ * @returns 
+ */
+async showFileOpenDialog(options = {}) {
+  this.emit("show-file-open-dialog", options);
+  return this.request("showFileOpenDialog", options);
+}
 
 
 }
@@ -1194,11 +1245,71 @@ userData: {
   /**
    * Full access to the underlying event emitter for application-level events, allowing for advanced event handling patterns if needed.
    */
-  events: appEvents
+  events: appEvents,
+
+  /**
+   * Sends a command to the native layer. This is a low-level method that can be used to send arbitrary commands, but for most use cases you will want to use the higher-level methods provided by the Window class instead. Emits an "ipc-sent" event with the command and arguments as data when done.
+   * @param {string} command The command to send to the native layer.
+   * @param {any[]} args The arguments to send with the command.
+   */
+  sendToNative(command, args) {
+   const firstWin = activeWindows.values().next().value;
+    if (firstWin) {
+      firstWin.sendCommand(command, args);
+    } else {
+      error("No active windows to send command to native layer");
+    }
+  },
   
+  /**
+   * Sends a request to the native layer and returns a Promise that resolves to the response. This is a low-level method that can be used to send arbitrary requests, but for most use cases you will want to use the higher-level methods provided by the Window class instead. Emits an "ipc-request-sent" event with the command and arguments as data when done.
+   * @param {string} command The command to send to the native layer.
+   * @param {any[]} args The arguments to send with the command.
+   * @returns {Promise<any>} A Promise that resolves to the response from the native layer.
+   */
+  async requestFromNative(command, ...args) {
+    const firstWin = activeWindows.values().next().value;
+    if (firstWin) {
+      return await firstWin.request(command, ...args);
+    } else {
+      error("No active windows to send request to native layer");
+      return null;
+    }
+  },
+
+  async isDarkMode() {
+    const res = await this.requestFromNative("isDarkMode");
+    return res?.isDarkMode;
+  }
+
 }
 
-module.exports = { Window, ipc, isPackaged, app, PORT };
+const clipboard = {
+
+  async writeText(text) {
+    app.sendToNative("writeToClipboard", [text]);
+  },
+
+  async readText() {
+    const res = await app.requestFromNative("readFromClipboard");
+    return res.text || "";
+  }
+
+}
+
+const blockPowerSave = {
+  
+  start() {
+    app.sendToNative("blockPowerSave");
+  },
+
+  stop() {
+    app.sendToNative("unblockPowerSave");
+  }
+
+}
+
+module.exports = { Window, ipc, isPackaged, app, PORT, clipboard, blockPowerSave };
 
 const findNearestPackageJson = require("./findpackage");
 

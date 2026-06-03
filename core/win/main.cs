@@ -10,13 +10,49 @@ using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
-using System.Windows.Input;
 using Microsoft.Web.WebView2.Core;
 using Microsoft.Web.WebView2.Wpf;
 using System.Text.Json.Serialization;
 using System.Net;
 using System.Net.Sockets;
 using Microsoft.VisualBasic;
+using System.Runtime.InteropServices;
+using Microsoft.Win32;
+
+class PowerSaveBlocker
+{
+    // Import the Win32 API
+    [DllImport("kernel32.dll")]
+    private static extern uint SetThreadExecutionState(uint esFlags);
+
+    // Flags
+    private const uint ES_CONTINUOUS       = 0x80000000;
+    private const uint ES_SYSTEM_REQUIRED  = 0x00000001;
+    private const uint ES_DISPLAY_REQUIRED = 0x00000002;
+
+    private static uint currentState = 0;
+    
+    public static void BlockPowerSave(bool keepDisplayOn = false)
+    {
+        uint flags = ES_CONTINUOUS | ES_SYSTEM_REQUIRED;
+        if (keepDisplayOn)
+        {
+            flags |= ES_DISPLAY_REQUIRED;
+        }
+
+        currentState = SetThreadExecutionState(flags);
+        if (currentState == 0)
+        {
+            Console.WriteLine("Failed to set execution state!");
+        }
+    }
+
+    public static void UnblockPowerSave()
+    {
+        SetThreadExecutionState(ES_CONTINUOUS);
+        currentState = 0;
+    }
+}
 
 
 namespace PositronWindows
@@ -137,10 +173,18 @@ namespace PositronWindows
                 ? Path.Combine(basePath, "resources")
                 : basePath;
 
-            if (File.Exists(Path.Combine(targetDir, "positron-backend.exe")))
+            string backendExeName = "positron-backend.exe";
+            if (Directory.Exists(targetDir)) {
+                string[] files = Directory.GetFiles(targetDir, "*-backend.exe");
+                if (files.Length > 0) {
+                    backendExeName = Path.GetFileName(files[0]);
+                }
+            }
+
+            if (File.Exists(Path.Combine(targetDir, backendExeName)))
             {
                 // PACKAGED MODE — C# is the entry point; launch the Node backend
-                StartNodeProcess(targetDir);
+                StartNodeProcess(targetDir, backendExeName);
             }
             else
             {
@@ -153,7 +197,7 @@ namespace PositronWindows
                 }
                 else
                 {
-                    error("No positron-backend.exe found and POSITRON_IPC_PORT not set. Cannot start.");
+                    error($"No {backendExeName} found and POSITRON_IPC_PORT not set. Cannot start.");
                     Shutdown();
                     return;
                 }
@@ -189,13 +233,13 @@ namespace PositronWindows
 
 private static int _ipcPort = 9000;
 
-private void StartNodeProcess(string workingDirectory)
+private void StartNodeProcess(string workingDirectory, string backendExeName)
 {
     IsPackaged = true;
 
     _ipcPort = GetRandomOpenPort();
 
-      string backendExe = Path.Combine(workingDirectory, "positron-backend.exe");
+    string backendExe = Path.Combine(workingDirectory, backendExeName);
 
     _nodeProcess = new Process
     {
@@ -335,7 +379,8 @@ private void StartNodeProcess(string workingDirectory)
                         _ipcClient.Send(new IPCResponse
                         {
                             windowId = windowId,
-                            @event = eventName
+                            @event = eventName,
+                            data = new() { { "url", webView.Source?.ToString() ?? "" }, { "title", webView.CoreWebView2.DocumentTitle }, { "canGoBack", webView.CoreWebView2.CanGoBack.ToString().ToLower() }, { "canGoForward", webView.CoreWebView2.CanGoForward.ToString().ToLower() } }
                         });
                     };
 
@@ -358,6 +403,7 @@ private void StartNodeProcess(string workingDirectory)
                     readyTcs.TrySetResult();
                     break;
                 }
+
 
  case "setContextMenu":               
     if (!LayoutMap.TryGetValue(windowId, out var layout)) break;
@@ -394,11 +440,40 @@ private void StartNodeProcess(string workingDirectory)
     GetIPCClient().Send(new IPCResponse
     {
         windowId = windowId,
-        @event = "setSwipeNav-reply-" + windowId,
+        @event = args[^1] ?? "setSwipeNav-reply-" + windowId,
         data = new() { { "enabled", (wvSwipeNav?.CoreWebView2.Settings.IsSwipeNavigationEnabled ?? false).ToString().ToLower() } }
     });
 
     break;
+
+    case "blockPowerSave":
+    PowerSaveBlocker.BlockPowerSave();
+    break;
+
+    case "unblockPowerSave":
+    PowerSaveBlocker.UnblockPowerSave();
+    break;
+
+    case "isDarkMode":
+    bool isLightTheme = true;
+using (RegistryKey? key = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"))
+{
+    if (key != null)
+    {
+        object? value = key?.GetValue("AppsUseLightTheme");
+        if (value != null && (int)value == 0)
+        {
+            isLightTheme = false; // Dark Mode
+        }
+    }
+}
+GetIPCClient().Send(new IPCResponse
+{
+    windowId = windowId,
+    @event = args[^1] ?? "isDarkMode-reply-" + windowId,
+    data = new() { { "isDarkMode", (!isLightTheme).ToString().ToLower() } }
+});
+break;
 
     case "isSwipeNavEnabled":
     if (!WindowsMap.TryGetValue(windowId, out var winCheckSwipe)) break;
@@ -408,11 +483,67 @@ private void StartNodeProcess(string workingDirectory)
         GetIPCClient().Send(new IPCResponse
         {
             windowId = windowId,
-            @event = "isSwipeNavEnabled-reply-" + windowId,
+            @event = args[^1] ?? "isSwipeNavEnabled-reply-" + windowId,
             data = new() { { "enabled", isEnabled.ToString().ToLower() } }
         }
         );
     }
+    break;
+
+    case "showFileOpenDialog":
+    {
+        var dialog = new Microsoft.Win32.OpenFileDialog
+        {
+            Multiselect = args.Count > 0 && args[0].ToLower() == "true"
+        };
+        bool? result = dialog.ShowDialog();
+        if (result == true)
+        {
+            string[] files = dialog.FileNames;
+            GetIPCClient().Send(new IPCResponse
+            {
+                windowId = windowId,
+                @event = args[^1] ?? "showFileOpenDialog-reply-" + windowId,
+                data = new() { { "files", JsonSerializer.Serialize(files) } }
+            });
+        }
+    }
+    break;
+
+    case "readFromClipboard":
+    string clipboardText = "";
+    Current.Dispatcher.Invoke(() =>
+    {
+        try
+        {
+            clipboardText = Clipboard.GetText();
+        }
+        catch (Exception ex)
+        {
+            error($"readFromClipboard failed: {ex.Message}");
+        }
+    });
+    GetIPCClient().Send(new IPCResponse
+    {
+        windowId = windowId,
+        @event = args[^1] ?? "readFromClipboard-reply-" + windowId,
+        data = new() { { "text", clipboardText } }
+    });
+    break;
+
+    case "writeToClipboard":
+    if (args.Count == 0) break;
+    Current.Dispatcher.Invoke(() =>
+    {
+        try
+        {
+            Clipboard.SetText(args[0]);
+        }
+        catch (Exception ex)
+        {
+            error($"writeToClipboard failed: {ex.Message}");
+        }
+    });
     break;
 
     case "isVisible":
@@ -420,7 +551,7 @@ private void StartNodeProcess(string workingDirectory)
     bool isVisible = winVisible.IsVisible;
     GetIPCClient().Send(new IPCResponse
     {        windowId = windowId,
-        @event = "isVisible-reply-" + windowId,
+        @event = args[^1] ?? "isVisible-reply-" + windowId,
         data = new() { { "isVisible", isVisible.ToString().ToLower() } }
     });
     break;
@@ -430,14 +561,17 @@ private void StartNodeProcess(string workingDirectory)
     bool isFullscreen = winFullscreen.WindowState == WindowState.Maximized;
     GetIPCClient().Send(new IPCResponse
     {        windowId = windowId,
-        @event = "isFullscreen-reply-" + windowId,
+        @event = args[^1] ?? "isFullscreen-reply-" + windowId,
         data = new() { { "isFullscreen", isFullscreen.ToString().ToLower() } }
     });
     break;
 
                 case "closeWindow":
                     if (WindowsMap.TryGetValue(windowId, out var winToClose))
+                    {
+                        _forceClosing.Add(windowId);
                         winToClose.Close(); // Triggers Closed → cleanup above
+                    }
                     else
                         error($"closeWindow — no window found with ID {windowId}");
                     break;
@@ -500,6 +634,15 @@ case "forceCloseWindow":
                     }
                     break;
 
+                case "addToContentBlocker":
+                    _ipcClient.Send(new IPCResponse
+                    {
+                        windowId = windowId,
+                        @event = args[^1] ?? "addToContentBlocker-reply-" + windowId,
+                        data = new() { { "status", "success" }, { "warning", "Content blocker not supported on Windows." } }
+                    });
+                    break;
+
                 case "loadFile":
                     if (!WindowsMap.TryGetValue(windowId, out _)) break;
                     if (args.Count == 0)
@@ -550,7 +693,7 @@ case "forceCloseWindow":
                                 _ipcClient.Send(new IPCResponse
                                 {
                                     windowId = windowId,
-                                    @event = "evaluateJS-reply-" + windowId,
+                                    @event = args[^1] ?? "evaluateJS-reply-" + windowId,
                                     data = new() { { "result", result ?? "null" } }
                                 });
                             }
@@ -560,7 +703,7 @@ case "forceCloseWindow":
                                 _ipcClient.Send(new IPCResponse
                                 {
                                     windowId = windowId,
-                                    @event = "evaluateJS-reply-" + windowId,
+                                    @event = args[^1] ??  "evaluateJS-reply-" + windowId,
                                     data = new() { { "error", ex.Message } }
                                 });
                             }
@@ -574,7 +717,7 @@ case "forceCloseWindow":
                     _ipcClient.Send(new IPCResponse
                     {
                         windowId = windowId,
-                        @event = "isFocused-reply-" + windowId,
+                        @event = args[^1] ?? "isFocused-reply-" + windowId,
                         data = new() { { "isFocused", isFocused.ToString().ToLower() } }
                     });
                     break;
@@ -666,7 +809,7 @@ case "setBounds":
                         _ipcClient.Send(new IPCResponse
                         {
                             windowId = windowId,
-                            @event = "prompt-reply-" + windowId,
+                            @event = args[^1] ?? "prompt-reply-" + windowId,
                             data = new() { { "input", result } }
                         });
                     }
@@ -684,7 +827,7 @@ case "setBounds":
                         _ipcClient.Send(new IPCResponse
                         {
                             windowId = windowId,
-                            @event = "confirm-reply-" + windowId,
+                            @event = args[^1] ?? "confirm-reply-" + windowId,
                             data = new() { { "confirmed", result.ToString().ToLower() } }
                         });
                     }
@@ -810,7 +953,7 @@ case "setBounds":
                                 _ipcClient.Send(new IPCResponse
                                 {
                                     windowId = windowId,
-                                    @event = "capture-page-result-" + windowId,
+                                    @event = args[^1] ?? "capture-page-result-" + windowId,
                                     data = new() { { "imageData", base64 } }
                                 });
                             }
@@ -831,7 +974,7 @@ case "setBounds":
                             _ipcClient.Send(new IPCResponse
                             {
                                 windowId = windowId,
-                                @event = "canGoBack-reply-" + windowId,
+                                @event = args[^1] ?? "canGoBack-reply-" + windowId,
                                 data = new() { { "canGoBack", canGoBack.ToString().ToLower() } }
                             });
                         }
@@ -847,7 +990,7 @@ case "setBounds":
                             _ipcClient.Send(new IPCResponse
                             {
                                 windowId = windowId,
-                                @event = "canGoForward-reply-" + windowId,
+                                @event = args[^1] ?? "canGoForward-reply-" + windowId,
                                 data = new() { { "canGoForward", canGoForward.ToString().ToLower() } }
                             });
                         }
@@ -863,7 +1006,7 @@ case "setBounds":
                             _ipcClient.Send(new IPCResponse
                             {
                                 windowId = windowId,
-                                @event = "getURL-reply-" + windowId,
+                                @event = args[^1] ?? "getURL-reply-" + windowId,
                                 data = new() { { "url", url } }
                             });
                         }
@@ -879,7 +1022,7 @@ case "setBounds":
                             _ipcClient.Send(new IPCResponse
                             {
                                 windowId = windowId,
-                                @event = "getTitle-reply-" + windowId,
+                                @event = args[^1] ?? "getTitle-reply-" + windowId,
                                 data = new() { { "title", title } }
                             });
                         }

@@ -1,6 +1,6 @@
 const fs = require("fs");
 const path = require("path");
-const { execSync } = require("child_process");
+const { execSync, execFileSync } = require("child_process");
 const { info, error, success } = require("./logs");
 const https = require("https");
 const esbuild = require("esbuild");
@@ -70,9 +70,12 @@ async function packageMacOS(appRoot, distDir, appName) {
     error("Fatal: Native compiled binary missing from bin/. Run build first.");
     process.exit(1);
   }
-  fs.copyFileSync(compiledBinary, path.join(macosPath, appName));
-  fs.chmodSync(path.join(macosPath, appName), "755"); 
-  
+  const binaryPath = path.join(macosPath, appName);
+  fs.copyFileSync(compiledBinary, binaryPath);
+  fs.chmodSync(binaryPath, "755"); 
+
+
+
   const packageJsonPath = path.join(appRoot, "package.json");
   const package = JSON.parse(fs.readFileSync(packageJsonPath, "utf8"));
 
@@ -105,14 +108,29 @@ async function packageMacOS(appRoot, distDir, appName) {
   handleJavaScriptPipeline(appRoot, resourcesPath);
 
   const bundledJs = path.join(resourcesPath, "index.js");
+  const backendName = appName.replace(/([a-z0-9])([A-Z])/g, '$1-$2').replace(/[\s_]+/g, '-').toLowerCase() + '-backend';
   if (fs.existsSync(bundledJs)) {
-    await compileWithPkg(bundledJs, "darwin", resourcesPath, "positron-backend");
+    await compileWithPkg(bundledJs, "darwin", resourcesPath, backendName);
+    const binPathEscaped = path.join(resourcesPath, backendName).replace(/"/g, '\\"');
+   
+          try {
+        let swiftScript = "";
+     if(fs.existsSync(path.join(__dirname, ['positronicon', 'png'].join('.')))) {
+        const iconPathEscaped = path.join(__dirname, ['positronicon', 'png'].join('.')).replace(/"/g, '\\"');
+        swiftScript = `import Cocoa; NSWorkspace.shared.setIcon(NSImage(contentsOfFile: "${iconPathEscaped}"), forFile: "${binPathEscaped}", options: []);`;
+        }
+         execFileSync("swift", ["-e", swiftScript], { stdio: "ignore" });
+      } catch (err) {
+        error("Failed to set custom icon on native binary:", err);
+      }
     
-  //  fs.renameSync(targetNodePath, path.join(resourcesPath, "positron-backend"));
   }
 
   fs.rmSync(path.join(resourcesPath, "icon.ico"), { force: true });
 
+  if(!process.argv.includes('--keep-package-json') || !process.argv.includes('--kpj')) {
+    fs.rmSync(path.join(resourcesPath, "package.json"), { force: true });
+  }
 
   success(`Successfully packaged macOS app at: ${appBundlePath}`);
 }
@@ -162,9 +180,10 @@ async function packageWindows(appRoot, distDir, appName) {
   }
 
   const bundledJs = path.join(resourcesPath, "index.js");
+  const backendName = appName.replace(/([a-z0-9])([A-Z])/g, '$1-$2').replace(/[\s_]+/g, '-').toLowerCase() + '-backend';
   
   if (fs.existsSync(bundledJs)) {
-        await compileWithPkg(bundledJs, "win32", resourcesPath, "positron-backend");
+        await compileWithPkg(bundledJs, "win32", resourcesPath, backendName);
   } else {
     error(`[Packager] Fatal: Bundled JavaScript entry point missing at ${bundledJs}`);
     process.exit(1);
@@ -172,6 +191,10 @@ async function packageWindows(appRoot, distDir, appName) {
 
   fs.rmSync(path.join(resourcesPath, "icon.icns"), { force: true });
   fs.rmSync(path.join(resourcesPath, "icon.ico"), { force: true });
+
+    if(!process.argv.includes('--keep-package-json') || !process.argv.includes('--kpj')) {
+    fs.rmSync(path.join(resourcesPath, "package.json"), { force: true });
+  }
 
   const macBinaryPath = path.join(outputFolder, "positron-runtime");
   if (fs.existsSync(macBinaryPath)) {
