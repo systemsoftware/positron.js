@@ -18,6 +18,7 @@ using System.Net.Sockets;
 using Microsoft.VisualBasic;
 using System.Runtime.InteropServices;
 using Microsoft.Win32;
+using System.Linq;
 
 class PowerSaveBlocker
 {
@@ -722,6 +723,16 @@ case "forceCloseWindow":
                     });
                     break;
 
+                case "getFocusedWindowId":
+                    int focusedWindowId = WindowsMap.FirstOrDefault(kv => kv.Value.IsActive).Key;
+                    _ipcClient.Send(new IPCResponse
+                    {
+                        windowId = windowId,
+                        @event = args[^1] ?? "getFocusedWindowId-reply-" + windowId,
+                        data = new() { { "focusedWindowId", focusedWindowId.ToString() } }
+                    });
+                    break;
+
                 case "showNotification":
                     if (args.Count < 2)
                     {
@@ -1094,7 +1105,7 @@ case "setBounds":
             MenuMap[windowId] = menu;
         }
 
-  private static void PopulateMenu(ItemCollection parentItems, JsonArray items, int windowId, string eventType = "menu-action")
+  internal static void PopulateMenu(ItemCollection parentItems, JsonArray items, int windowId, string eventType = "menu-action")
 {
     foreach (var item in items)
     {

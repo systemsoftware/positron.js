@@ -13,6 +13,7 @@ const { info, error, warn, success } = require("./logs");
 
 let currMenu = []
 let contextMenu = [];
+let trayMenu = [];
 
 const randomPort = () => {
   const min = 1024;
@@ -180,7 +181,7 @@ ws.on("message", raw => {
           win.destroy();
         }
       }
-      } else if(msg.event == "menu-action" || msg.event == "context-menu-action") {
+      } else if(msg.event == "menu-action" || msg.event == "context-menu-action" || msg.event == "tray-menu-action") {
        
             const findMenuAction = (items, label, channel) => {
       if (!items || items.length === 0) return null;
@@ -199,7 +200,12 @@ ws.on("message", raw => {
       return null; 
     }
         
-        const menuAction = findMenuAction((msg.event === "menu-action" ? currMenu : contextMenu), msg.data.label, msg.data.channel);
+        let searchMenu = msg.event === "menu-action" ? currMenu : (msg.event === "context-menu-action" ? contextMenu : trayMenu);
+        let menuAction = findMenuAction(searchMenu, msg.data.label, msg.data.channel);
+        
+        if (!menuAction && msg.event === "context-menu-action") {
+          menuAction = findMenuAction(trayMenu, msg.data.label, msg.data.channel);
+        }
         
         if (menuAction) {
           menuAction.click();
@@ -1106,6 +1112,10 @@ async showFileOpenDialog(options = {}) {
 const app = {
 
   name:"PositronApp",
+  
+  setTrayMenu(menuTemplate) {
+    trayMenu = menuTemplate;
+  },
 
   /**
    * Quits the application by sending a terminate command to the native layer and then exiting the process. Emits a "before-quit" event before sending the command, and a "quit" event after initiating the quit sequence.
@@ -1162,8 +1172,10 @@ const app = {
    * @returns {Promise<Window|null>} The currently focused window, or null if no windows are focused.
    */
   async getFocusedWindow() {
-   const results = await Promise.all([...activeWindows].map(win => win.isFocused().then(isFocused => ({ win, isFocused }))));
-   return results.find(({ isFocused }) => isFocused)?.win || null;
+   const getFocused = await this.requestFromNative("getFocusedWindowId");
+   const winId = getFocused?.focusedWindowId ? parseInt(getFocused.focusedWindowId, 10) : -1;
+   const focusedWin = [...activeWindows].find(w => w.id === winId);
+   return focusedWin || { error: "No focused window found" };
   },
 
   /**

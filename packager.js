@@ -33,24 +33,27 @@ function performPackager() {
 
 function handleJavaScriptPipeline(appRoot, resourcesPath) {
   const targetOutputFile = path.join(resourcesPath, "index.js");
+  let bundledFiles = [];
 
     info(`[Packager] Bundling JavaScript code with esbuild...`);
     try {
-      esbuild.buildSync({
+      const result = esbuild.buildSync({
         entryPoints: [path.join(appRoot, "index.js")],
         bundle: true,
         platform: "node",
         target: `node${MAJOR_NODE_V}`,
         outfile: targetOutputFile,
-        minify: ob,
+        minify: true,
         sourcemap: false,
+        metafile: true,
       });
+      bundledFiles = Object.keys(result.metafile.inputs).map(f => path.resolve(appRoot, f));
     } catch (err) {
       error("Fatal: esbuild bundling failed.");
       process.exit(1);
     }
 
-    copyAppAssets(appRoot, resourcesPath);
+    copyAppAssets(appRoot, resourcesPath, bundledFiles);
 
 }
 
@@ -212,7 +215,7 @@ async function packageWindows(appRoot, distDir, appName) {
   success(`Successfully packaged Windows app directory at: ${outputFolder}`);
 }
 
-function copyAppAssets(src, dest) {
+function copyAppAssets(src, dest, ignoredFiles = []) {
   const ignoreList = ["node_modules", "dist", "bin", ".git"];
   
   function copyRecursive(currentSrc, currentDest) {
@@ -221,6 +224,8 @@ function copyAppAssets(src, dest) {
       if (ignoreList.includes(item)) continue;
 
       const srcPath = path.join(currentSrc, item);
+      if (ignoredFiles.includes(srcPath)) continue;
+
       const destPath = path.join(currentDest, item);
       const stat = fs.statSync(srcPath);
 
@@ -232,7 +237,6 @@ function copyAppAssets(src, dest) {
         fs.mkdirSync(destPath, { recursive: true });
         copyRecursive(srcPath, destPath);
       } else {
-        if (item.endsWith(".js")) continue;
         fs.copyFileSync(srcPath, destPath);
       }
     }
@@ -244,6 +248,14 @@ function copyAppAssets(src, dest) {
 const { exec } = require("@yao-pkg/pkg");
 
 async function compileWithPkg(bundledJsPath, targetPlatform, outputFolder, appName) {
+
+  if(process.argv.includes("--no-pkg")) {
+    const finalPath = path.join(outputFolder, "index.js");
+    fs.copyFileSync(bundledJsPath, finalPath);
+    success(`[Packager] Skipped pkg compilation. Copied bundled JavaScript to: ${finalPath}`);
+    return;
+  }
+
   info(`[Packager] Packaging application into a standalone binary...`);
 
   let pkgTarget = "";

@@ -832,6 +832,12 @@ case "addToContentBlocker":
             IPCResponse(windowId: windowId, event: args.last ??  "isFocused-reply-\(windowId)", data: ["isFocused": isFocused ? "true" : "false"])
         )
 
+    case "getFocusedWindowId":
+        let focusedWindowId = windows.first(where: { $0.value.isKeyWindow })?.key ?? -1
+        AppDelegate.shared?.ipcClient.send(
+            IPCResponse(windowId: windowId, event: args.last ?? "getFocusedWindowId-reply-\(windowId)", data: ["focusedWindowId": "\(focusedWindowId)"])
+        )
+
     case "emitToRenderer":
         guard let window = windows[windowId] else { return }
         guard args.count >= 2 else {
@@ -1005,7 +1011,7 @@ func makePreloadScript(windowId: Int) -> String {
         /** Called internally by Swift's evaluateJS to deliver a push message. */
         _emit(channel, payload) {
           (_listeners[channel] || []).forEach(fn => {
-            try { fn(payload); } catch(e) { console.printError('[ipc] listener error:', e); }
+            try { fn(payload); } catch(e) { console.error('[ipc] listener error:', e); }
           });
         },
 
