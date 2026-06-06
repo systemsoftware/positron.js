@@ -1,6 +1,6 @@
 const fs = require("fs");
 const path = require("path");
-const { execSync, execFileSync } = require("child_process");
+const { execSync, execFileSync, spawnSync } = require("child_process");
 const { info, error, success } = require("./logs");
 const https = require("https");
 const esbuild = require("esbuild");
@@ -322,7 +322,9 @@ function copyAppAssets(src, dest, ignoredFiles = []) {
         if(ob && item.endsWith(".js")) {
           info(`Obfuscating JavaScript file: ${destPath}`);
           try {
-           execSync(`npx javascript-obfuscator "${destPath}" --compact true --self-defending true --string-array true --string-array-encoding base64 --string-array-threshold 1 --output "${destPath}"`, { stdio:"inherit" })
+            const obResult = spawnSync("npx", ["javascript-obfuscator", destPath, "--compact", "true", "--self-defending", "true", "--string-array", "true", "--string-array-encoding", "base64", "--string-array-threshold", "1", "--output", destPath], { stdio:"inherit" });
+            if (obResult.error) throw obResult.error;
+            if (obResult.status !== 0) throw new Error("javascript-obfuscator failed");
           } catch (err) {
             error(`JavaScript obfuscation failed for ${destPath}:`, err);
           }

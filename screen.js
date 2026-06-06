@@ -1,4 +1,4 @@
-const { execSync } = require('child_process');
+const { spawnSync } = require('child_process');
 
 /**
  * Gets the screen size of the primary display. The implementation varies based on the operating system:
@@ -11,16 +11,18 @@ function getScreenSize() {
 
   try {
     if (platform === 'win32') {
-      const cmd = "powershell -command \"Get-CimInstance Win32_VideoController | Select-Object CurrentHorizontalResolution, CurrentVerticalResolution | Format-List\"";
-      const output = execSync(cmd).toString();
+      const result = spawnSync("powershell", ["-command", "Get-CimInstance Win32_VideoController | Select-Object CurrentHorizontalResolution, CurrentVerticalResolution | Format-List"]);
+      if (result.error || result.status !== 0) throw new Error("Failed to execute powershell");
+      const output = result.stdout.toString();
       const width = output.match(/CurrentHorizontalResolution\s*:\s*(\d+)/)?.[1];
       const height = output.match(/CurrentVerticalResolution\s*:\s*(\d+)/)?.[1];
       return { width: parseInt(width), height: parseInt(height) };
     } 
     
     if (platform === 'darwin') {
-      const cmd = "system_profiler SPDisplaysDataType | grep Resolution";
-      const output = execSync(cmd).toString();
+      const result = spawnSync("system_profiler", ["SPDisplaysDataType"]);
+      if (result.error || result.status !== 0) throw new Error("Failed to execute system_profiler");
+      const output = result.stdout.toString().split('\\n').filter(line => line.includes('Resolution')).join('\\n');
       const match = output.match(/(\d+) x (\d+)/);
       return { width: parseInt(match[1]), height: parseInt(match[2]) };
     } 

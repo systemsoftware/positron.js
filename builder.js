@@ -309,7 +309,8 @@ function performNativeBuild() {
     if (process.platform !== "linux") {
       info("[Builder] Cross-compiling for Linux using Docker...");
       try {
-        cp.execSync("docker --version", { stdio: "ignore" });
+        const dockerVer = cp.spawnSync("docker", ["--version"], { stdio: "ignore" });
+        if (dockerVer.error || dockerVer.status !== 0) throw new Error("Docker is not available");
       } catch (e) {
         error("[Builder] Fatal: Docker is required to cross-compile for Linux on macOS/Windows.");
         process.exit(1);
@@ -331,7 +332,9 @@ function performNativeBuild() {
       info(`[Builder] Building Docker image for ${dockerArch}...`);
       
       try {
-        cp.execSync(`docker build --platform ${dockerArch} -t ${dockerTag} -f ${path.join(coreLinuxDir, "Dockerfile.linux")} ${coreLinuxDir}`, { stdio: "inherit" });
+        const buildRes = cp.spawnSync("docker", ["build", "--platform", dockerArch, "-t", dockerTag, "-f", path.join(coreLinuxDir, "Dockerfile.linux"), coreLinuxDir], { stdio: "inherit" });
+        if (buildRes.error) throw buildRes.error;
+        if (buildRes.status !== 0) throw new Error("Docker build failed");
 
         const outBinaryDir = path.join(appRoot, "bin");
 
@@ -359,7 +362,9 @@ function performNativeBuild() {
         ].join(" ");
         
         info("[Builder] Compiling inside Docker container...");
-        cp.execSync(`docker run --rm --platform ${dockerArch} -v "${appRoot}:/app" -v "${__dirname}:/framework" ${dockerTag} bash -c '${gccArgs}'`, { stdio: "inherit" });
+        const runRes = cp.spawnSync("docker", ["run", "--rm", "--platform", dockerArch, "-v", `\${appRoot}:/app`, "-v", `\${__dirname}:/framework`, dockerTag, "bash", "-c", gccArgs], { stdio: "inherit" });
+        if (runRes.error) throw runRes.error;
+        if (runRes.status !== 0) throw new Error("Docker run failed");
         
         success("[Builder] Linux native cross-compilation successful.");
         return true;
@@ -370,8 +375,10 @@ function performNativeBuild() {
     } else {
       info("[Builder] Compiling Linux native binary natively via g++...");
       try {
-        const pkgConfigCmd = "pkg-config --cflags --libs gtk+-3.0 webkit2gtk-4.1 json-glib-1.0 libnotify";
-        const pkgConfigOutput = cp.execSync(pkgConfigCmd, { encoding: 'utf8' }).trim().split(/\\s+/);
+        const pkgRes = cp.spawnSync("pkg-config", ["--cflags", "--libs", "gtk+-3.0", "webkit2gtk-4.1", "json-glib-1.0", "libnotify"], { encoding: 'utf8' });
+        if (pkgRes.error) throw pkgRes.error;
+        if (pkgRes.status !== 0) throw new Error("pkg-config failed");
+        const pkgConfigOutput = pkgRes.stdout.trim().split(/\\s+/);
         
         const extensionSources = nativeExtensionsLinux.map(e => e.sourceFile);
         const gccArgs = [
