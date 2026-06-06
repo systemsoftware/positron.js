@@ -34,6 +34,8 @@ Positron is built as a lightweight, secure alternative to Electron. Below is a d
 - Node.js (v16+)
 - macOS: Xcode Command Line Tools (swiftc)
 - Windows: .NET SDK (CLI tools capable of executing `dotnet publish`)
+- C++ compiler (G++ is the default), GTK+ 3 and WebKit2GTK on Linux
+  - Docker if building for Linux on macOS or Windows
 
 ## Install
 ```bash
@@ -76,7 +78,8 @@ To create a native extension, provide a custom positron property block within yo
     "command": "toast:show",
     "platforms": {
       "darwin": "src/mac/ToastPlugin.swift",
-      "win32": "src/win/ToastPlugin.cs"
+      "win32": "src/win/ToastPlugin.cs",
+      "linux":"src/linux/ToastPlugin.cpp"
     }
   }
 }
@@ -112,10 +115,10 @@ npx positron run
 ### Packaging
 This will rebuild the binary, then create a deployable version of the app
 ```bash
-npx positron package [--m | --w] [--arm64 || --x64]
+npx positron package [--m | --w || --l] [--arm64 || --x64]
 ```
 
-> Note: Windows supports either arm64 or x64, while macOS only supports arm64 on Apple Silicon.
+> Note: Windows & Linux support either arm64 or x64, while macOS only supports arm64.
 
 ## IPC Protocol Specification
 Communication relies on structured JSON communication frames routed through the IPC WebSocket server.
@@ -143,12 +146,8 @@ Communication relies on structured JSON communication frames routed through the 
 }
 ```
 
-## Environment Flags
-- POSITRON_PACKAGED: Set to "true" inside production bundles to suppress localized development shell background re-compilation triggers.
-- POSITRON_IPC_PORT: The port that the IPC server runs on.
-
 ## License
 MIT
 
 ## Documentation
-Read docs [here](https://positronjs.gitbook.io/v1)
+[Read here](https://positronjs.gitbook.io/v1)

@@ -37,12 +37,11 @@ const binaryPath = path.join(appRoot, "bin", binaryName);
 
 const appEvents = new Events.EventEmitter();
 
-
 const isPackaged = process.env.POSITRON_PACKAGED === "true";
 
 if(isPackaged) {
 if (typeof process.pkg !== 'undefined') {
-  if (process.platform === 'darwin') {
+  if (process.platform === 'darwin' || process.platform === 'linux') {
     __dirname = path.join(path.dirname(process.execPath), '.');
   } else {
     __dirname = path.dirname(process.execPath);
@@ -52,11 +51,6 @@ if (typeof process.pkg !== 'undefined') {
 
 const EXPECTED_TOKEN = process.env.POSITRON_AUTH_TOKEN;
 
-const parseRes = (obj) => {
-  if (Object.keys(obj) > 1) return obj;
-
-  return Object.values(obj)[0];
-}
 
 if (!isPackaged) {
     // DEV MODE
@@ -68,6 +62,8 @@ if (!isPackaged) {
             process.exit(1);
         }
     }
+
+ //   setTimeout(() => { // FOR HIJACK TESTING
 
     info("Starting Positron render process...");
     const renderProcess = cp.spawn(binaryPath, {
@@ -102,12 +98,20 @@ process.on("uncaughtException", (err) => {
         info(`[Positron] Render process exited with code ${code}`);
         process.exit(code);
     });
+ //   }, 60000);
 } else {
     // PRODUCTION MODE
     info("[Positron] Packaged mode detected. Skipping native binary spawn.");
 }
 
 const httpServer = http.createServer((req, res) => {
+  const clientToken = req.headers["x-positron-auth-token"];
+  if (clientToken !== EXPECTED_TOKEN) {
+    res.writeHead(401, { 'Content-Type': 'text/plain' });
+    res.end('Unauthorized');
+    return;
+  }
+
   if (req.method === 'GET' && req.url === '/running') {
     res.writeHead(200, { 'Content-Type': 'text/plain' });
     res.end('true');
@@ -117,7 +121,25 @@ const httpServer = http.createServer((req, res) => {
   }
 });
 
-const _ipcWS = new WebSocket.Server({ server: httpServer });
+const MAX_CONNECTIONS = 1;
+
+const _ipcWS = new WebSocket.Server({ server: httpServer, verifyClient: (info, cb) => {
+
+  const clientToken = info.req.headers["x-positron-auth-token"];
+  if (clientToken !== EXPECTED_TOKEN) {
+    warn("[Security] Unauthorized local connection attempt rejected.");
+    cb(false, 401, "Unauthorized token match failure.");
+    return
+  } 
+
+  if (_ipcWS.clients.size >= MAX_CONNECTIONS) {
+      return cb(false, 503, 'IPC client already connected. Only one client allowed at a time.');
+    }
+  
+  cb(true);
+}
+
+});
 let activeSocket = null;
 const pendingWindows = new Set(); 
 
@@ -127,14 +149,6 @@ const commandQueue = [];
 let activeWindows = new Set();
 
 _ipcWS.on("connection", (ws, req) => {
-const clientToken = req.headers["x-positron-auth-token"];
-
-  if (clientToken !== EXPECTED_TOKEN) {
-    warn("[Security] Unauthorized local connection attempt rejected. Token:", clientToken, "Expected:", EXPECTED_TOKEN);
-    ws.close(4001, "Unauthorized token match failure.");
-    return;
-  }
-
   activeSocket = ws;
   success("Client connected to IPC");
 
@@ -154,7 +168,7 @@ ws.on("message", raw => {
 
    if(process.env.POSITRON_LOG_IPC) console.log("Received IPC message:", msg);
 
-    if (msg.event === "ipcMessage" || msg.event.includes("-reply-") || msg.event.includes("-result-")) {
+    if (msg.event === "ipcMessage" || msg.event.includes("-reply-") || msg.event.includes("-result-") || msg.event === "nativeError") {
       
       const simulatedMsg = msg.event === "ipcMessage" ? msg : {
         event: "ipcMessage",
@@ -216,7 +230,7 @@ ws.on("message", raw => {
       appEvents.emit(msg.event, msg.data);
     }
   } catch (err) {
-    error("Failed to process incoming IPC network frame:", err);
+    error("Failed to process incoming IPC network frame:", err, err.stack.split('\n').slice(1).join('\n'));
   }
 });
 
@@ -243,12 +257,20 @@ class Window extends Events.EventEmitter {
       minimizable: true,
       titlebarTransparent: false,
       titlebarVisible: true
-    }
+    },
+    linuxOptions: {
+      closable: true,
+      resizable: true,
+      minimizable: true,
+      titlebarTransparent: false,
+      titlebarVisible: true
+    },
+    allowEvaluateJS: false
 
   }) {
     super();
     this.id = ++_windowCounter;
-    this.options = options;
+    this.options = { allowEvaluateJS: false, ...options };
     activeWindows.add(this);
 
     if (activeSocket && activeSocket.readyState === WebSocket.OPEN) {
@@ -261,7 +283,11 @@ class Window extends Events.EventEmitter {
     const height = options.height ? String(options.height) : "600";
 
     if(!this.options.skipCreate) {
-      this.create(width, height, options.darwinOptions);
+      if (process.platform === "linux") {
+        this.create(width, height, options.linuxOptions || options.darwinOptions);
+      } else {
+        this.create(width, height, options.darwinOptions);
+      }
     }
 
   }
@@ -698,7 +724,8 @@ async request(command, ...args) {
       }
     });
 
-    let timeout;
+        let timeout;
+
 
     if(!options.noTimeout) {
       let timeoutDuration = 7000;
@@ -712,7 +739,8 @@ if (options.timeout) {
       if (!settled) {
         settled = true;
         unsubscribe();
-        reject(new Error(`Request timed out waiting for reply on channel "${replyChannel}"`));
+    //    reject(new Error(`Request timed out waiting for reply on channel "${replyChannel}"`));
+    resolve({ error: `Request timed out waiting for reply on channel "${replyChannel}"` });
       }
     }, timeoutDuration);
   } else {
@@ -882,8 +910,16 @@ setTitlebarTransparent(isTransparent) {
  * @returns {Promise<*>} A Promise that resolves to the result of the evaluation.
  */
 async evaluateJavaScript(script) {
-const res = await this.request("evaluateJS", script);
-return res.result;
+  if (!this.options.allowEvaluateJS) {
+    throw new Error("evaluateJavaScript is disabled by default for security. Set allowEvaluateJS: true in window options to enable it.");
+  }
+  return await this.#evaluateJavaScriptInternal(script);
+}
+
+
+async #evaluateJavaScriptInternal(script) {
+  const res = await this.request("evaluateJS", script);
+  return res.result;
 }
 
 /**
@@ -891,7 +927,7 @@ return res.result;
  * @returns {Promise<string>} The user agent string of the window.
  */
 async getUserAgent() {
-  return await this.evaluateJavaScript("navigator.userAgent");
+  return await this.#evaluateJavaScriptInternal("navigator.userAgent");
 }
 
 /**
@@ -912,7 +948,7 @@ async setStyleOf(selector, style) {
     });
   })();
   `;
-  await this.evaluateJavaScript(script);
+  await this.#evaluateJavaScriptInternal(script);
   this.emit("style-updated", { selector, style });
 }
 
@@ -932,7 +968,7 @@ async setAttributeOf(selector, attribute, value) {
     });
   })();
   `;
-  await this.evaluateJavaScript(script);
+  await this.#evaluateJavaScriptInternal(script);
   this.emit("attribute-updated", { selector, attribute, value });
 }
 
@@ -951,7 +987,7 @@ async removeAttributeOf(selector, attribute) {
       });
     })();
   `;
-  await this.evaluateJavaScript(script);
+  await this.#evaluateJavaScriptInternal(script);
   this.emit("attribute-removed", { selector, attribute });
 }
 
@@ -973,7 +1009,7 @@ async removeStyleOf(selector, styleProperties) {
       });
     })();
   `;
-  await this.evaluateJavaScript(script);
+  await this.#evaluateJavaScriptInternal(script);
   this.emit("style-removed", { selector, styleProperties });
 }
 
@@ -1008,7 +1044,7 @@ async onClick(selector, channel, { replace = true } = {}) {
   })();
   `;
 
-  await this.evaluateJavaScript(script);
+  await this.#evaluateJavaScriptInternal(script);
 }
 
 /**
@@ -1023,7 +1059,7 @@ async removeOnClick(selector) {
       el.onclick = null;
     });
   `;
-  await this.evaluateJavaScript(script);
+  await this.#evaluateJavaScriptInternal(script);
 }
 
 /**
@@ -1033,8 +1069,8 @@ async removeOnClick(selector) {
  */
 async confirm(message) {
   const res = await this.request("confirm", message);
-  this.emit("confirm", message);
-  return res?.confirmed === "true";
+  this.emit("confirm", res?.confirmed);
+  return res?.confirmed == true || res?.confirmed === "true";
 }
 
 /**
@@ -1217,6 +1253,11 @@ userData: {
         "Application Support",
         process.env.POSITRON_APP_NAME
       );
+    } else {
+      // Linux / other POSIX — follow XDG Base Directory spec
+      const xdgDataHome = process.env.XDG_DATA_HOME
+        || path.join(process.env.HOME, ".local", "share");
+      userPath = path.join(xdgDataHome, process.env.POSITRON_APP_NAME);
     }
 
     if(!fs.existsSync(userPath)) {

@@ -8,7 +8,8 @@ const findPackageJson = require("./findpackage");
 
 const MAJOR_NODE_V = 24;
 
-const ob = process.argv.includes("--obfuscate");
+const min = process.argv.includes("--minify") || process.argv.includes("--min");
+const ob = process.argv.includes("--obfuscate") || process.argv.includes("--ob");
 
 const arch = process.argv.includes("--x64") ? "x64" : process.argv.includes("--arm64") ? "arm64" : process.arch;
 
@@ -22,13 +23,25 @@ function performPackager() {
   if (fs.existsSync(distDir)) fs.rmSync(distDir, { recursive: true, force: true });
   fs.mkdirSync(distDir, { recursive: true });
 
+  let selectedPlatform = false;
+
   if (process.argv.includes("--mac") || process.argv.includes("--m")) {
     packageMacOS(appRoot, distDir, appName);
-  } else if (process.argv.includes("--windows") || process.argv.includes("--w")) {
+    selectedPlatform = true;
+  } 
+   if (process.argv.includes("--windows") || process.argv.includes("--w")) {
     packageWindows(appRoot, distDir, appName);
-  } else {
-    process.platform === "win32" ? packageWindows(appRoot, distDir, appName) : packageMacOS(appRoot, distDir, appName);
-  }
+      selectedPlatform = true;
+  } 
+   if (process.argv.includes("--linux") || process.argv.includes("--l")) {
+    packageLinux(appRoot, distDir, appName);
+      selectedPlatform = true;
+  } 
+
+    if (selectedPlatform) return;
+    if (process.platform === "win32") packageWindows(appRoot, distDir, appName);
+    else if (process.platform === "linux") packageLinux(appRoot, distDir, appName);
+    else packageMacOS(appRoot, distDir, appName);
 }
 
 function handleJavaScriptPipeline(appRoot, resourcesPath) {
@@ -89,7 +102,7 @@ async function packageMacOS(appRoot, distDir, appName) {
     <key>CFBundleExecutable</key>
     <string>${appName}</string>
     <key>CFBundleIdentifier</key>
-    <string>com.${package.author || "positron"}.${appName.toLowerCase()}</string>
+    <string>${package.bundleIdentifier || `com.${package.author || "positron"}.${appName.toLowerCase()}`}</string>
     <key>CFBundleName</key>
     <string>${appName}</string>
     <key>CFBundlePackageType</key>
@@ -215,6 +228,57 @@ async function packageWindows(appRoot, distDir, appName) {
   success(`Successfully packaged Windows app directory at: ${outputFolder}`);
 }
 
+async function packageLinux(appRoot, distDir, appName) {
+  const outputFolder = path.join(distDir, `${appName}-linux`);
+  fs.mkdirSync(outputFolder, { recursive: true });
+
+  info(`[Packager] Creating Linux App structure...`);
+
+  const binFolder = path.join(appRoot, "bin");
+  const compiledBinary = path.join(binFolder, "positron-runtime");
+  
+  if (!fs.existsSync(compiledBinary)) {
+    error("Fatal: Native compiled binary missing from bin/. Run build first.");
+    process.exit(1);
+  }
+
+  const binaryPath = path.join(outputFolder, appName);
+  fs.copyFileSync(compiledBinary, binaryPath);
+  fs.chmodSync(binaryPath, "755");
+
+  const resourcesPath = path.join(outputFolder, "resources");
+  fs.mkdirSync(resourcesPath, { recursive: true });
+
+  handleJavaScriptPipeline(appRoot, resourcesPath);
+
+  const bundledJs = path.join(resourcesPath, "index.js");
+  const backendName = appName.replace(/([a-z0-9])([A-Z])/g, '$1-$2').replace(/[\s_]+/g, '-').toLowerCase() + '-backend';
+  
+  if (fs.existsSync(bundledJs)) {
+    await compileWithPkg(bundledJs, "linux", resourcesPath, backendName);
+  } else {
+    error(`[Packager] Fatal: Bundled JavaScript entry point missing at ${bundledJs}`);
+    process.exit(1);
+  }
+
+  const desktopContent = `[Desktop Entry]
+Name=${appName}
+Exec=./${appName}
+Icon=utilities-terminal
+Type=Application
+Categories=Utility;`;
+  fs.writeFileSync(path.join(outputFolder, `${appName}.desktop`), desktopContent);
+
+  if(!process.argv.includes('--keep-package-json') || !process.argv.includes('--kpj')) {
+    fs.rmSync(path.join(resourcesPath, "package.json"), { force: true });
+  }
+
+  fs.rmSync(path.join(resourcesPath, "icon.icns"), { force: true });
+  fs.rmSync(path.join(resourcesPath, "icon.ico"), { force: true });
+
+  success(`Successfully packaged Linux app directory at: ${outputFolder}`);
+}
+
 function copyAppAssets(src, dest, ignoredFiles = []) {
   const ignoreList = ["node_modules", "dist", "bin", ".git"];
   
@@ -238,6 +302,32 @@ function copyAppAssets(src, dest, ignoredFiles = []) {
         copyRecursive(srcPath, destPath);
       } else {
         fs.copyFileSync(srcPath, destPath);
+
+        if(min && item.endsWith(".js")) {
+          info(`Minifying JavaScript file: ${destPath}`);
+          try {
+            esbuild.buildSync({
+              "bundle": false,
+              "minify": true,
+              "sourcemap": false,
+              "target": `node${MAJOR_NODE_V}`,
+              "entryPoints": [srcPath],
+              "outfile": destPath,
+            })
+          } catch (err) {
+            error(`JavaScript minification failed for ${destPath}:`, err);
+          }
+        }
+
+        if(ob && item.endsWith(".js")) {
+          info(`Obfuscating JavaScript file: ${destPath}`);
+          try {
+           execSync(`npx javascript-obfuscator "${destPath}" --compact true --self-defending true --string-array true --string-array-encoding base64 --string-array-threshold 1 --output "${destPath}"`, { stdio:"inherit" })
+          } catch (err) {
+            error(`JavaScript obfuscation failed for ${destPath}:`, err);
+          }
+        }
+
       }
     }
   }
@@ -268,6 +358,8 @@ async function compileWithPkg(bundledJsPath, targetPlatform, outputFolder, appNa
     finalBinaryName = `${appName}.exe`;
   } else if (targetPlatform === "darwin") {
     pkgTarget = `node${MAJOR_NODE_V}-macos-${arch}`;
+  } else if (targetPlatform === "linux") {
+    pkgTarget = `node${MAJOR_NODE_V}-linux-${arch}`;
   }
 
   const outputPath = path.join(outputFolder, finalBinaryName);

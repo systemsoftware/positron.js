@@ -1,5 +1,6 @@
 const { app } = require("./index");
 const { Menu } = require("./menu");
+const { warn } = require("./logs");
 
 let createdTray = false;
  
@@ -7,8 +8,10 @@ module.exports = {
 
 create(menu, title = "", icon = "") {
 
+  if(process.platform == "linux") return warn("Tray is not supported on Linux at this time.");
+
     if(createdTray) {
-        console.warn("Tray already created. Use setMenu, setTitle, or setIcon to update the existing tray.");
+        warn("Tray already created. Use setMenu, setTitle, or setIcon to update the existing tray.");
         return;
     }
     
@@ -34,6 +37,9 @@ create(menu, title = "", icon = "") {
   },
 
   setMenu(menu) {
+
+      if(process.platform == "linux") return warn("Tray is not supported on Linux at this time.");
+
     if(menu instanceof Menu) {
         menu = menu.template
     }
@@ -54,10 +60,12 @@ create(menu, title = "", icon = "") {
   },
 
   setTitle(title) {
+      if(process.platform == "linux") return warn("Tray is not supported on Linux at this time.");
     app.sendToNative("createTray", [title, "setTitle"]);
   },
 
   setIcon(iconPath) {
+      if(process.platform == "linux") return warn("Tray is not supported on Linux at this time.");
     app.sendToNative("createTray", [iconPath, "setIcon"]);
   }
 

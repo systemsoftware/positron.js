@@ -127,6 +127,22 @@ func printError(_ message: String) {
     let tag = isWarning ? "WARNING" : (isInfo ? "INFO" : "ERROR")
 
     print("\(red)[SWIFT \(tag)] \(msg)\(reset)")
+
+    if(tag == "INFO") {
+        return
+    }
+
+    if msg.contains("IPC response") || msg.contains("WebSocket error") || msg.contains("Reconnecting to") || msg.contains("IPC message") {
+        return
+    }
+
+    if let ipcClient = AppDelegate.shared?.ipcClient {
+        ipcClient.send(
+            IPCResponse(windowId: -1, event: "nativeError", data: ["message": message, "type": tag])
+        )
+    } else {
+        print("\(red)[SWIFT ERROR] No IPC client available to send error message over. \(reset)")
+    }
 }
 
 public protocol PositronExtension {
@@ -370,6 +386,10 @@ case "forceCloseWindow":
             printError("loadURL — invalid or missing URL")
             return
         }
+        if let scheme = url.scheme?.lowercased(), !["http", "https", "file"].contains(scheme) {
+            printError("loadURL — blocked unauthorized URL scheme: \(scheme)")
+            return
+        }
         (window.contentView as? WKWebView)?.load(URLRequest(url: url))
 
     case "hide":
@@ -584,19 +604,6 @@ UNUserNotificationCenter.current().requestAuthorization(
             AppDelegate.shared?.ipcClient.send(
                 IPCResponse(windowId: windowId, event: args.last ?? "getTitle-reply-\(windowId)", data: ["title": title])
             )
-
-        case "executeAppleScript":
-            guard let scriptSource = args.first else {
-                printError("executeAppleScript — missing script argument")
-                return
-            }
-            let script = NSAppleScript(source: scriptSource)
-            var errorInfo: NSDictionary?
-            script?.executeAndReturnError(&errorInfo)
-            if let errorInfo {
-                let errorMessage = errorInfo[NSAppleScript.errorMessage] as? String ?? "Unknown error"
-                printError("executeAppleScript failed: \(errorMessage)")
-            }
 
 case "isVisible":
     guard let window = windows[windowId] else { return }
@@ -819,7 +826,7 @@ case "addToContentBlocker":
         alert.addButton(withTitle: "Cancel")
 
         alert.beginSheetModal(for: window) { response in
-            let confirmed = (response == .alertFirstButtonReturn)
+            let confirmed = (response == .alertSecondButtonReturn) ? false : true
             AppDelegate.shared?.ipcClient.send(
                 IPCResponse(windowId: windowId, event: args.last ?? "confirm-reply-\(windowId)", data: ["confirmed": confirmed ? "true" : "false"])
             )
@@ -925,6 +932,14 @@ final class WebViewNavigationDelegate: NSObject, WKNavigationDelegate {
         AppDelegate.shared?.ipcClient.send(
             IPCResponse(windowId: windowId, event: eventName, data: ["url": webView.url?.absoluteString ?? "", "title": webView.title ?? "", "canGoBack": (webView.canGoBack ? "true" : "false"), "canGoForward": (webView.canGoForward ? "true" : "false")])
         )
+    }
+
+    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+        printError("Navigation failed: \(error.localizedDescription)")
+    }
+
+    func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+        printError("Provisional navigation failed: \(error.localizedDescription)")
     }
 }
 
@@ -1035,9 +1050,9 @@ final class IPCClient {
     private let maxReconnectAttempts = 10
     private let reconnectDelay: TimeInterval = 2.0
 
-    init(serverURL: URL = URL(string: "ws://localhost:9000")!) {
+    init(serverURL: URL = URL(string: "ws://127.0.0.1:9000")!) {
         let POSITRON_IPC_PORT = port ?? 9000
-        self.serverURL = URL(string: "ws://localhost:\(POSITRON_IPC_PORT)")!
+        self.serverURL = URL(string: "ws://127.0.0.1:\(POSITRON_IPC_PORT)")!
         self.authToken = AUTH_TOKEN
     }
 
@@ -1052,7 +1067,6 @@ final class IPCClient {
         webSocketTask = session.webSocketTask(with: request)
         webSocketTask?.resume()
         printError("INFO: Connecting to IPC server (attempt \(reconnectAttempts + 1))…")
-        reconnectAttempts = 0 // reset on successful connect
         receiveMessage()
     }
 
@@ -1064,7 +1078,12 @@ final class IPCClient {
         }
         webSocketTask?.send(.string(text)) { error in
             if let error {
-                printError("Failed to send IPC response: \(error.localizedDescription)")
+                let errorMsg = error.localizedDescription
+                printError("Failed to send IPC response: \(errorMsg)")
+                if errorMsg.lowercased().contains("bad response from the server") {
+                    printError("Fatal connection error (Unauthorized or Port Hijacked). Exiting immediately.")
+                    exit(1)
+                }
             }
         }
     }
@@ -1074,9 +1093,15 @@ final class IPCClient {
             guard let self else { return }
             switch result {
             case .failure(let error):
-                printError("WebSocket error: \(error.localizedDescription).")
+                let errorMsg = error.localizedDescription
+                printError("WebSocket error: \(errorMsg).")
+                if errorMsg.contains("503") || errorMsg.contains("401") || errorMsg.contains("403") || errorMsg.lowercased().contains("bad response from the server") {
+                    printError("Fatal connection error (Unauthorized or Port Hijacked). Exiting immediately.")
+                    exit(1)
+                }
                 self.scheduleReconnect()
             case .success(let message):
+                self.reconnectAttempts = 0
                 switch message {
                 case .string(let text):
                     self.parseAndDispatch(text)
@@ -1108,7 +1133,7 @@ final class IPCClient {
         reconnectAttempts += 1
         guard reconnectAttempts < maxReconnectAttempts else {
             printError("Exceeded maximum reconnect attempts (\(maxReconnectAttempts)). Giving up.")
-            return
+            exit(1)
         }
         printError("Reconnecting to \(serverURL) in \(reconnectDelay)s… (attempt \(reconnectAttempts)/\(maxReconnectAttempts))")
         DispatchQueue.global().asyncAfter(deadline: .now() + reconnectDelay) { [weak self] in

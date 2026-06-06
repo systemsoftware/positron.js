@@ -131,6 +131,20 @@ namespace PositronWindows
 
     string reset = "\u001b[0m";
     Console.WriteLine($"{red}[C# {tag}] {message}{reset}");
+
+    if (_ipcClient != null)    {
+        if (tag != "INFO") {
+            _ipcClient.Send(new IPCResponse
+            {
+                windowId = -1,
+                @event = "nativeError",
+                data = new() { { "message", message }, { "type", tag } }
+            });
+        }
+    } else
+            {
+                Console.WriteLine($"{red}[C# ERROR] No IPC client available to send error message over. {reset}");
+            }
 }
 
         private static readonly string AuthToken = 
@@ -222,7 +236,7 @@ namespace PositronWindows
             };
 
             await Task.Delay(500);
-            _ipcClient = new IPCClient(new Uri($"ws://localhost:{_ipcPort}"));
+            _ipcClient = new IPCClient(new Uri($"ws://127.0.0.1:{_ipcPort}"));
             _ = _ipcClient.ConnectAsync(AuthToken);
         }
 
@@ -377,12 +391,16 @@ private void StartNodeProcess(string workingDirectory, string backendExeName)
                     {
                         bool isFile = webView.Source != null && webView.Source.IsFile;
                         string eventName = isFile ? $"loadFile-reply-{windowId}" : $"loadURL-reply-{windowId}";
-                        _ipcClient.Send(new IPCResponse
-                        {
-                            windowId = windowId,
-                            @event = eventName,
-                            data = new() { { "url", webView.Source?.ToString() ?? "" }, { "title", webView.CoreWebView2.DocumentTitle }, { "canGoBack", webView.CoreWebView2.CanGoBack.ToString().ToLower() }, { "canGoForward", webView.CoreWebView2.CanGoForward.ToString().ToLower() } }
-                        });
+                        if (e.IsSuccess) {
+                            _ipcClient.Send(new IPCResponse
+                            {
+                                windowId = windowId,
+                                @event = eventName,
+                                data = new() { { "url", webView.Source?.ToString() ?? "" }, { "title", webView.CoreWebView2.DocumentTitle }, { "canGoBack", webView.CoreWebView2.CanGoBack.ToString().ToLower() }, { "canGoForward", webView.CoreWebView2.CanGoForward.ToString().ToLower() } }
+                            });
+                        } else {
+                            error($"Navigation failed: {e.WebErrorStatus}");
+                        }
                     };
 
             webView.CoreWebView2.ContextMenuRequested += (s, e) =>
@@ -624,14 +642,19 @@ case "forceCloseWindow":
 
                 case "loadURL":
                     if (!WindowsMap.TryGetValue(windowId, out _)) break;
-                    if (args.Count == 0)
+                    if (args.Count == 0 || !Uri.TryCreate(args[0], UriKind.Absolute, out var loadUrlUri))
                     {
                         error("loadURL — invalid or missing URL");
                         break;
                     }
+                    if (loadUrlUri.Scheme != Uri.UriSchemeHttp && loadUrlUri.Scheme != Uri.UriSchemeHttps && loadUrlUri.Scheme != Uri.UriSchemeFile)
+                    {
+                        error($"loadURL — blocked unauthorized URL scheme: {loadUrlUri.Scheme}");
+                        break;
+                    }
                     {
                         var wv = GetWebView(windowId);
-                        if (wv != null) wv.Source = new Uri(args[0]);
+                        if (wv != null) wv.Source = loadUrlUri;
                     }
                     break;
 
@@ -1269,11 +1292,12 @@ case "setBounds":
                 if (_reconnectAttempts >= MaxReconnectAttempts)
                 {
                     error($"Exceeded maximum reconnect attempts ({MaxReconnectAttempts}). Giving up.");
-                    return;
+                    Environment.Exit(1);
                 }
 
                 try
                 {
+                    if (_ws != null) _ws.Dispose();
                     _ws = new ClientWebSocket();
                     _ws.Options.SetRequestHeader("x-positron-auth-token", authToken);
                     error($"INFO: Connecting to IPC server (attempt {_reconnectAttempts + 1})…");
@@ -1285,8 +1309,18 @@ case "setBounds":
                 catch (Exception ex)
                 { 
                     _reconnectAttempts++;
-                    error($"WebSocket error: {ex.Message}. Reconnecting in {ReconnectDelayMs / 1000}s… (attempt {_reconnectAttempts}/{MaxReconnectAttempts})");
-                    await Task.Delay(ReconnectDelayMs);
+                    string errorMsg = ex.Message;
+                    if (ex.InnerException != null) errorMsg += " | " + ex.InnerException.Message;
+
+                    error($"WebSocket error: {errorMsg}. Reconnecting in {ReconnectDelayMs / 1000}s… (attempt {_reconnectAttempts}/{MaxReconnectAttempts})");
+                    
+                    if (errorMsg.Contains("503") || errorMsg.Contains("401") || errorMsg.Contains("403"))
+                    {
+                        error("Fatal connection error (Unauthorized or Port Hijacked). Exiting immediately.");
+                        Environment.Exit(1);
+                    }
+
+                    await Task.Delay(ReconnectDelayMs, _cts.Token);
                 }
             }
         }
