@@ -21,7 +21,7 @@ const randomPort = () => {
   return Math.floor(Math.random() * (max - min + 1)) + min;
 }
 
-const PORT = process.env.POSITRON_IPC_PORT || randomPort();
+let PORT = process.env.POSITRON_IPC_PORT || randomPort();
 const HOST = "127.0.0.1";
 
 if (!process.env.POSITRON_AUTH_TOKEN) {
@@ -104,22 +104,7 @@ process.on("uncaughtException", (err) => {
     info("[Positron] Packaged mode detected. Skipping native binary spawn.");
 }
 
-const httpServer = http.createServer((req, res) => {
-  const clientToken = req.headers["x-positron-auth-token"];
-  if (clientToken !== EXPECTED_TOKEN) {
-    res.writeHead(401, { 'Content-Type': 'text/plain' });
-    res.end('Unauthorized');
-    return;
-  }
-
-  if (req.method === 'GET' && req.url === '/running') {
-    res.writeHead(200, { 'Content-Type': 'text/plain' });
-    res.end('true');
-  } else {
-    res.writeHead(404, { 'Content-Type': 'text/plain' });
-    res.end('Not Found');
-  }
-});
+const httpServer = http.createServer()
 
 const MAX_CONNECTIONS = 1;
 
@@ -265,8 +250,9 @@ class Window extends Events.EventEmitter {
       titlebarTransparent: false,
       titlebarVisible: true
     },
-    allowEvaluateJS: false
-
+    allowEvaluateJS: false,
+    skipCreate: false,
+    preload: ""
   }) {
     super();
     this.id = ++_windowCounter;
@@ -284,9 +270,9 @@ class Window extends Events.EventEmitter {
 
     if(!this.options.skipCreate) {
       if (process.platform === "linux") {
-        this.create(width, height, options.linuxOptions || options.darwinOptions);
+        this.create(width, height, options.linuxOptions || options.darwinOptions, options.preload);
       } else {
-        this.create(width, height, options.darwinOptions);
+        this.create(width, height, options.darwinOptions, options.preload);
       }
     }
 
@@ -401,6 +387,7 @@ sendIpc = (channel, args = []) => {
   * @param {string} width 
   * @param {string} height 
   * @param {Object} darwinOptions 
+  * @param {string?} preloadFile
   * @returns 
   */
 create(width, height, darwinOptions = {
@@ -409,7 +396,7 @@ create(width, height, darwinOptions = {
   minimizable: true,
   titlebarTransparent: false,
   titlebarVisible: true
-}) {
+}, preloadFile = null) {
   if (this.#created) {
     warn(`Window ${this.id} is already created.`);
     return;
@@ -427,7 +414,7 @@ create(width, height, darwinOptions = {
   this.#created = true;
   if(!width) width = this.options.width || 800;
   if(!height) height = this.options.height || 600;
-      this.sendCommand("createWindow", [width, height, ...Object.values(darwinOptions).map(val => String(val))]);
+      this.sendCommand("createWindow", [width, height, ...Object.values(darwinOptions).map(val => String(val)), preloadFile || ""]);
     this.emit("created");
 }
 
@@ -1143,14 +1130,91 @@ async showFileOpenDialog(options = {}) {
 }
 
 
+  async findInPage(text, options = { caseSensitive: false, scrollIntoView: true }) {
+    const js = `
+      (() => {
+  const walker = document.createTreeWalker(
+    document.body, 
+    NodeFilter.SHOW_TEXT, 
+    null
+  );
+
+  const searchTerm = ${JSON.stringify(text)};
+  const scrollIntoView = ${options.scrollIntoView};
+  const caseSensitive = ${options.caseSensitive};
+
+  const matches = [];
+  let node;
+
+  while (node = walker.nextNode()) {
+    if (caseSensitive) {
+      if (node.nodeValue.includes(searchTerm)) {
+        matches.push(node);
+      }
+    } else {
+      if (node.nodeValue.toLowerCase().includes(searchTerm.toLowerCase())) {
+        matches.push(node);
+      }
+    }
+  }
+
+  matches.forEach(textNode => {
+    const parent = textNode.parentNode;
+    
+    const index = caseSensitive
+  ? textNode.nodeValue.indexOf(searchTerm)
+  : textNode.nodeValue.toLowerCase().indexOf(searchTerm.toLowerCase());
+
+if (index === -1) return;
+    
+    const matchNode = textNode.splitText(index);
+    matchNode.splitText(searchTerm.length);
+    
+    const mark = document.createElement('mark');
+    mark.className = 'find-in-page-highlight';
+    
+    parent.insertBefore(mark, matchNode);
+    mark.appendChild(matchNode);
+    
+    if (scrollIntoView) {
+      mark.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+  });
+})();
+    `;
+    const res = await this.#evaluateJavaScriptInternal(js);
+    this.emit("find-in-page", { text, result: res });
+    return res;
+  }
+
+async stopFindInPage() {
+  const js = `
+    (() => {
+      const highlights = document.querySelectorAll('.find-in-page-highlight');
+      highlights.forEach(mark => {
+        const parent = mark.parentNode;
+        parent.replaceChild(document.createTextNode(mark.textContent), mark);
+        parent.normalize();
+      });
+    })();
+  `;
+  await this.#evaluateJavaScriptInternal(js);
+  this.emit("stop-find-in-page");
+}
+
+
 }
 
 const app = {
 
   name:"PositronApp",
-  
+
   setTrayMenu(menuTemplate) {
+    if(menuTemplate instanceof Menu) {
+      menuTemplate = menuTemplate.template;
+    } 
     trayMenu = menuTemplate;
+    this.events.emit("tray-menu-updated", menuTemplate);
   },
 
   /**
@@ -1330,6 +1394,10 @@ userData: {
     }
   },
 
+  /**
+   * Checks if the system is currently in dark mode. Returns a Promise that resolves to true if dark mode is enabled, or false if it is disabled. Emits an "is-dark-mode-checked" event with the result as data when done.
+   * @returns {Promise<boolean>} True if dark mode is enabled, false otherwise.
+   */
   async isDarkMode() {
     const res = await this.requestFromNative("isDarkMode");
     return res?.isDarkMode;
@@ -1362,7 +1430,103 @@ const blockPowerSave = {
 
 }
 
-module.exports = { Window, ipc, isPackaged, app, PORT, clipboard, blockPowerSave };
+const getOpenPort = () => {
+  const server = http.createServer()
+  const res = server.listen(0).address();
+  if (res && typeof res === "object") {
+    server.close();
+    return res.port;
+  } else {
+    warn("Failed to get open port, defaulting to random port generator");
+    return getRandomPort();
+  }
+}
+
+const setPort = (port) => {
+  PORT = port;
+  process.env.POSITRON_IPC_PORT = String(port);
+  httpServer.close(() => {
+    httpServer.listen(PORT, HOST, () => {
+      info("IPC server running on " + HOST + ":" + PORT);
+    });
+  });
+}
+
+const authorize = (req) => {
+  const header = req.headers["x-positron-auth-token"] || req.headers.authorization;
+
+  if (!header) {
+    return false;
+  }
+
+  const token = header.replace("Bearer ", "").trim();
+  const expectedToken = process.env.POSITRON_AUTH_TOKEN || "";
+
+  try {
+    const a = Buffer.from(token, 'utf8');
+    const b = Buffer.from(expectedToken, 'utf8');
+    if (a.length !== b.length) return false;
+    return crypto.timingSafeEqual(a, b);
+  } catch (e) {
+    return false;
+  }
+}
+
+const registeredRoutes = [];
+
+httpServer.on("request", (req, res) => {
+  const parsedUrl = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+  const pathname = parsedUrl.pathname;
+
+  let matched = false;
+  for (const route of registeredRoutes) {
+    if (route.method === req.method && route.endpoint === pathname) {
+      matched = true;
+      if (route.requireAuth && !authorize(req)) {
+        res.writeHead(401, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "Unauthorized" }));
+        return;
+      }
+      route.cb(req, res);
+      break;
+    }
+  }
+
+  if (!matched) {
+    res.writeHead(404, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ error: "Not Found" }));
+  }
+});
+
+const server = {
+  authorize,
+  get: (endpoint, cb, requireAuth = false) => {
+    registeredRoutes.push({ method: "GET", endpoint, cb, requireAuth });
+  },
+  post: (endpoint, cb, requireAuth = false) => {
+    registeredRoutes.push({ method: "POST", endpoint, cb, requireAuth });
+  },
+  patch: (endpoint, cb, requireAuth = false) => {
+    registeredRoutes.push({ method: "PATCH", endpoint, cb, requireAuth });
+  },
+  delete: (endpoint, cb, requireAuth = false) => {
+    registeredRoutes.push({ method: "DELETE", endpoint, cb, requireAuth });
+  },
+  put: (endpoint, cb, requireAuth = false) => {
+    registeredRoutes.push({ method: "PUT", endpoint, cb, requireAuth });
+  },
+
+  unregister(endpoint) {
+    const index = registeredRoutes.findIndex(r => r.endpoint === endpoint);
+    if (index !== -1) {
+      registeredRoutes.splice(index, 1);
+    }
+  },
+
+  fullServer: httpServer
+}
+
+module.exports = { Window, ipc, isPackaged, app, ipcPort:PORT, clipboard, blockPowerSave, getOpenPort, PORT, httpServer:server, wsServer:_ipcWS, setPort };
 
 const findNearestPackageJson = require("./findpackage");
 

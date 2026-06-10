@@ -340,14 +340,23 @@ function performNativeBuild() {
 
         if(!fs.existsSync(outBinaryDir)) fs.mkdirSync(outBinaryDir, { recursive: true });
 
-        const extensionSources = nativeExtensionsLinux.map(e => e.sourceFile);
-        const mappedExtensions = extensionSources.map(s => {
-          if (s.startsWith(appRoot)) {
-            return "/app/" + path.relative(appRoot, s).replace(/\\/g, '/');
-          } else if (s.startsWith(__dirname)) {
-            return "/framework/" + path.relative(__dirname, s).replace(/\\/g, '/');
+        let dockerArgs = ["run", "--rm", "--platform", dockerArch, "-v", `${appRoot}:/app`, "-v", `${__dirname}:/framework`];
+
+        const mappedExtensions = nativeExtensionsLinux.map((e, i) => {
+          let s;
+          try { s = fs.realpathSync(e.sourceFile); } catch(err) { s = e.sourceFile; }
+          const realAppRoot = fs.realpathSync(appRoot);
+          const realDirname = fs.realpathSync(__dirname);
+
+          if (s.startsWith(realAppRoot)) {
+            return "/app/" + path.relative(realAppRoot, s).replace(/\\/g, '/');
+          } else if (s.startsWith(realDirname)) {
+            return "/framework/" + path.relative(realDirname, s).replace(/\\/g, '/');
+          } else {
+            const extDir = path.dirname(s);
+            dockerArgs.push("-v", `${extDir}:/ext_${i}`);
+            return `/ext_${i}/${path.basename(s)}`;
           }
-          return s; 
         });
 
         const compiler = process.argv.find(arg => arg.startsWith("--compiler="))?.split("=")[1] || "g++";
@@ -362,7 +371,8 @@ function performNativeBuild() {
         ].join(" ");
         
         info("[Builder] Compiling inside Docker container...");
-        const runRes = cp.spawnSync("docker", ["run", "--rm", "--platform", dockerArch, "-v", `\${appRoot}:/app`, "-v", `\${__dirname}:/framework`, dockerTag, "bash", "-c", gccArgs], { stdio: "inherit" });
+        dockerArgs.push(dockerTag, "bash", "-c", gccArgs);
+        const runRes = cp.spawnSync("docker", dockerArgs, { stdio: "inherit" });
         if (runRes.error) throw runRes.error;
         if (runRes.status !== 0) throw new Error("Docker run failed");
         

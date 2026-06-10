@@ -47,6 +47,23 @@ static string js_escape(const string& s) {
     return out;
 }
 
+void trim(std::string &s) {
+    const std::string WHITESPACE = " \n\r\t\f\v";
+    
+    // Find first non-whitespace character
+    size_t start = s.find_first_not_of(WHITESPACE);
+    if (start == std::string::npos) {
+        s.clear(); // String is entirely whitespace
+        return;
+    }
+    
+    // Find last non-whitespace character
+    size_t end = s.find_last_not_of(WHITESPACE);
+    
+    // Extract the trimmed substring
+    s = s.substr(start, end - start + 1);
+}
+
 void send_ipc(int window_id, const string& event, JsonBuilder* payload_builder) {
     if (!ws_conn) return;
 
@@ -330,6 +347,8 @@ void handle_command(int window_id, const string& command, const vector<string>& 
         bool closable  = args.size() > 2 ? args[2] == "true" : true;
         bool resizable = args.size() > 3 ? args[3] == "true" : true;
         bool minimizable = args.size() > 4 ? args[4] == "true" : true;
+        string preloadFile = args.size() > 7 ? args[7] : "";
+        trim(preloadFile);
 
         GtkWidget* window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
         gtk_window_set_default_size(GTK_WINDOW(window), width, height);
@@ -362,6 +381,19 @@ void handle_command(int window_id, const string& command, const vector<string>& 
 
         WebKitWebView* webview = WEBKIT_WEB_VIEW(
             webkit_web_view_new_with_user_content_manager(ucm));
+
+        if(!preloadFile.empty() && preloadFile != "null") {
+              ifstream t(preloadFile);
+                string str((istreambuf_iterator<char>(t)),
+                             istreambuf_iterator<char>());
+            WebKitUserScript* user_script = webkit_user_script_new(
+                str.c_str(),
+                WEBKIT_USER_CONTENT_INJECT_ALL_FRAMES,
+                WEBKIT_USER_SCRIPT_INJECT_AT_DOCUMENT_START,
+                nullptr, nullptr);
+            webkit_user_content_manager_add_script(ucm, user_script);
+                webkit_user_script_unref(user_script);
+        }
 
         g_signal_connect(webview, "load-changed", G_CALLBACK(on_load_changed), GINT_TO_POINTER(window_id));
         g_signal_connect(window, "delete-event", G_CALLBACK(on_delete_event), GINT_TO_POINTER(window_id));

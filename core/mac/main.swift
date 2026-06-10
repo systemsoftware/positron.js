@@ -242,6 +242,7 @@ func handleCommand(windowId: Int, command: String, args: [String]) {
         let minimizable = args.count > 4 ? (args[4].lowercased() == "true") : true
         let titlebarTransparent = args.count > 5 ? (args[5].lowercased() == "true") : false
         let titlebarVisible = args.count > 6 ? (args[6].lowercased() == "true") : true
+        let preloadFile = args.count > 7 ? args[7].trimmingCharacters(in: .whitespacesAndNewlines) : nil
 
         let styleMask: NSWindow.StyleMask = [
             .titled,
@@ -282,6 +283,20 @@ func handleCommand(windowId: Int, command: String, args: [String]) {
             forMainFrameOnly: false
         )
         config.userContentController.addUserScript(preload)
+
+        if preloadFile != nil && !preloadFile!.isEmpty {
+            do {
+                let scriptContent = try String(contentsOfFile: preloadFile!, encoding: .utf8)
+                let customPreload = WKUserScript(
+                    source: scriptContent,
+                    injectionTime: .atDocumentStart,
+                    forMainFrameOnly: false
+                )
+                config.userContentController.addUserScript(customPreload)
+            } catch {
+                printError("Failed to load custom preload script at \(preloadFile!): \(error.localizedDescription)")
+            }
+        }
 
         let webView = PositronWebView(frame: NSRect(origin: .zero, size: frame.size), configuration: config)
         let navDelegate = WebViewNavigationDelegate(windowId: windowId)

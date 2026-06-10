@@ -41,6 +41,7 @@ module.exports = class IpcRouter {
     const handlers = this.#handlers.get(channel);
 
     if (!handlers || handlers.size === 0) {
+      if(channel == "nativeError") return
       warn(`[ipc] No handlers for channel "${channel}"`);
       return false;
     }

@@ -322,6 +322,7 @@ private void StartNodeProcess(string workingDirectory, string backendExeName)
                 {
                     int width  = args.Count > 0 && int.TryParse(args[0], out var w) ? w : 800;
                     int height = args.Count > 1 && int.TryParse(args[1], out var h) ? h : 600;
+                    string? preloadFile = args.Count > 7 ? args[7].Trim() : null;
 
                     var window = new Window
                     {
@@ -364,7 +365,7 @@ private void StartNodeProcess(string workingDirectory, string backendExeName)
                         _ipcClient.Send(new IPCResponse { windowId = windowId, @event = "windowClosed" });
 
                         if (WindowsMap.Count == 0)
-                            Application.Current.Shutdown();
+                            Current.Shutdown();
                     };
 
                     WindowsMap[windowId] = window;
@@ -380,6 +381,19 @@ private void StartNodeProcess(string workingDirectory, string backendExeName)
                     await webView.EnsureCoreWebView2Async();
                     webView.CoreWebView2.Settings.AreDevToolsEnabled = !IsPackaged;
                     await webView.CoreWebView2.AddScriptToExecuteOnDocumentCreatedAsync(MakePreloadScript(windowId));
+
+                    if (preloadFile != null && File.Exists(preloadFile))
+                    {
+                        try
+                        {
+                            string preloadScript = File.ReadAllText(preloadFile);
+                            await webView.CoreWebView2.AddScriptToExecuteOnDocumentCreatedAsync(preloadScript);
+                        }
+                        catch (Exception ex)
+                        {
+                            error($"Failed to load preload script: {ex.Message}");
+                        }
+                    }
 
                     // Sync window title with page title
                     webView.CoreWebView2.DocumentTitleChanged += (s, _) =>

@@ -27,6 +27,23 @@ function getScreenSize() {
       return { width: parseInt(match[1]), height: parseInt(match[2]) };
     } 
 
+    if (platform === 'linux') {
+    const xrandr = spawnSync("xrandr", { encoding: 'utf-8' });
+    if (!xrandr.error && xrandr.status === 0) {
+      const match = xrandr.stdout.match(/(\d+)x(\d+)(?:\s+|\+).*?\*/);
+      if (match) {
+        return { width: parseInt(match[1], 10), height: parseInt(match[2], 10) };
+      }
+    }
+    const xdpy = spawnSync("xdpyinfo", { encoding: 'utf-8' });
+    if (!xdpy.error && xdpy.status === 0) {
+      const match = xdpy.stdout.match(/dimensions:\s+(\d+)x(\d+)/);
+      if (match) {
+        return { width: parseInt(match[1], 10), height: parseInt(match[2], 10) };
+      }
+    }
+  }
+
   } catch (error) {
     console.error("Failed to fetch screen size:", error.message);
   }
