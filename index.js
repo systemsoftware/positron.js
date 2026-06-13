@@ -22,7 +22,7 @@ const randomPort = () => {
 }
 
 let PORT = process.env.POSITRON_IPC_PORT || randomPort();
-const HOST = "127.0.0.1";
+const HOST = process.env.POSITRON_IPC_HOST || "127.0.0.1";
 
 if (!process.env.POSITRON_AUTH_TOKEN) {
     process.env.POSITRON_AUTH_TOKEN = crypto.randomUUID();
@@ -1121,8 +1121,8 @@ async addToContentBlocker(config={ json:[], url:"", file:"", reload:true, clearE
 
 /**
  * Displays a file open dialog and returns a Promise that resolves to an array of selected file paths, or null if the user cancelled the dialog.
- * @param {*} options The options for the file open dialog.
- * @returns 
+ * @param {Object} options The options for the file open dialog.
+ * @returns {Promise<Array<string>>} A promise that resolves to an array of selected file paths.
  */
 async showFileOpenDialog(options = {}) {
   this.emit("show-file-open-dialog", options);
@@ -1187,6 +1187,9 @@ if (index === -1) return;
     return res;
   }
 
+  /**
+   * Removes highlights added by the findInPage method. Returns a Promise that resolves when the highlights have been removed. Emits a "stop-find-in-page" event when done.
+   */
 async stopFindInPage() {
   const js = `
     (() => {
@@ -1202,6 +1205,23 @@ async stopFindInPage() {
   this.emit("stop-find-in-page");
 }
 
+/**
+ * Sets the opacity of the window's background.
+ * @param {number} value The opacity value for the background (0.0 to 1.0)
+ */
+setBackgroundOpacity(value) {
+  this.sendCommand("setBackgroundTransparency", [String(value)]);
+  this.emit("background-transparency-updated", value);
+}
+
+/**
+ * Sets the opacity of the window.
+ * @param {number} value The opacity value (0.0 to 1.0)
+ */
+setOpacity(value) {
+  this.sendCommand("setOpacity", [String(value)]);
+  this.emit("opacity-updated", value);
+}
 
 }
 
@@ -1279,8 +1299,8 @@ const app = {
   },
 
   /**
-   * Sets the application name, which is used for things like the user data directory and may be used by the native layer for other purposes.
-   * @param {*} name The new name for the application. This will be converted to a string before being used.
+   * Sets the application name.
+   * @param {string} name The new name for the application.
    */
   setName(name) {
     process.env.POSITRON_APP_NAME = name;
@@ -1295,7 +1315,7 @@ const app = {
 userData: {
   /**
    * Gets the path to the user data directory for the application. The path is determined based on the operating system and the application name. If the directory does not exist, it will be created. Emits a "user-data-path-retrieved" event with the path as data when done.
-   * @param {string} [append] An optional string to append to the user data path. This can be used to create subdirectories within the user data directory for organizing different types of data. If provided, the appended path will also be created if it does not exist.
+   * @param {string} [append] An optional string to append to the user data path.
    * @returns {string} The path to the user data directory.
    */
   getPath(append) {
@@ -1332,7 +1352,7 @@ userData: {
   },
 
   /**
-   * Creates the user data directory if it does not already exist. Emits a "user-data-created" event when the directory is created successfully.
+   * Creates the user data directory if it does not already exist.
    */
   create() {
     const userPath = this.getPath();
@@ -1344,7 +1364,7 @@ userData: {
   },
 
   /**
-   * Deletes the user data directory and all of its contents. Use with caution, as this will permanently remove all user data for the application. Emits a "user-data-deleted" event when the directory is deleted successfully.
+   * Deletes the user data directory and all of its contents. Use with caution, as this will permanently remove all user data for the application.
    */
 
   delete() {
@@ -1365,7 +1385,7 @@ userData: {
   events: appEvents,
 
   /**
-   * Sends a command to the native layer. This is a low-level method that can be used to send arbitrary commands, but for most use cases you will want to use the higher-level methods provided by the Window class instead. Emits an "ipc-sent" event with the command and arguments as data when done.
+   * Sends a command to the native layer. This is a low-level method that can be used to send arbitrary commands, but for most use cases you will want to use the higher-level methods provided by the Window class instead.
    * @param {string} command The command to send to the native layer.
    * @param {any[]} args The arguments to send with the command.
    */
@@ -1379,7 +1399,7 @@ userData: {
   },
   
   /**
-   * Sends a request to the native layer and returns a Promise that resolves to the response. This is a low-level method that can be used to send arbitrary requests, but for most use cases you will want to use the higher-level methods provided by the Window class instead. Emits an "ipc-request-sent" event with the command and arguments as data when done.
+   * Sends a request to the native layer and returns a Promise that resolves to the response. This is a low-level method that can be used to send arbitrary requests, but for most use cases you will want to use the higher-level methods provided by the Window class instead.
    * @param {string} command The command to send to the native layer.
    * @param {any[]} args The arguments to send with the command.
    * @returns {Promise<any>} A Promise that resolves to the response from the native layer.
@@ -1407,10 +1427,18 @@ userData: {
 
 const clipboard = {
 
+  /**
+   * Writes the specified text to the system clipboard.
+   * @param {string} text The text to write to the clipboard.
+   */
   async writeText(text) {
     app.sendToNative("writeToClipboard", [text]);
   },
 
+  /**
+   * Reads text from the system clipboard. Returns a Promise that resolves to the text currently stored in the clipboard, or an empty string if the clipboard is empty or does not contain text. 
+   * @returns {Promise<string>} The text currently stored in the clipboard.
+   */
   async readText() {
     const res = await app.requestFromNative("readFromClipboard");
     return res.text || "";
@@ -1452,6 +1480,11 @@ const setPort = (port) => {
   });
 }
 
+/**
+ * Authorizes an incoming request by checking for a valid authentication token in the request headers. The token is compared to the expected token stored in the environment variable POSITRON_AUTH_TOKEN using a timing-safe comparison to prevent against timing attacks.
+ * @param {Object} req The incoming HTTP request object.
+ * @returns {boolean} True if the request is authorized, false otherwise.
+ */
 const authorize = (req) => {
   const header = req.headers["x-positron-auth-token"] || req.headers.authorization;
 
@@ -1500,28 +1533,63 @@ httpServer.on("request", (req, res) => {
 
 const server = {
   authorize,
+  /**
+   * Registers an GET route with the server.
+   * @param {string} endpoint The endpoint for the route.
+   * @param {Function} cb The callback function for the route.
+   * @param {boolean} requireAuth Whether the route requires authentication.
+   */
   get: (endpoint, cb, requireAuth = false) => {
     registeredRoutes.push({ method: "GET", endpoint, cb, requireAuth });
   },
+  /**
+   * Registers an POST route with the server.
+   * @param {string} endpoint The endpoint for the route.
+   * @param {Function} cb The callback function for the route.
+   * @param {boolean} requireAuth Whether the route requires authentication.
+   */
   post: (endpoint, cb, requireAuth = false) => {
     registeredRoutes.push({ method: "POST", endpoint, cb, requireAuth });
   },
+  /**
+   * Registers a PATCH route with the server.
+   * @param {string} endpoint The endpoint for the route.
+   * @param {Function} cb The callback function for the route.
+   * @param {boolean} requireAuth Whether the route requires authentication.
+   */
   patch: (endpoint, cb, requireAuth = false) => {
     registeredRoutes.push({ method: "PATCH", endpoint, cb, requireAuth });
   },
+  /**
+   * Registers a DELETE route with the server.
+   * @param {string} endpoint The endpoint for the route.
+   * @param {Function} cb The callback function for the route.
+   * @param {boolean} requireAuth Whether the route requires authentication.
+   */
   delete: (endpoint, cb, requireAuth = false) => {
     registeredRoutes.push({ method: "DELETE", endpoint, cb, requireAuth });
   },
+  /**
+   * Registers a PUT route with the server.
+   * @param {string} endpoint The endpoint for the route.
+   * @param {Function} cb The callback function for the route.
+   * @param {boolean} requireAuth Whether the route requires authentication.
+   */
   put: (endpoint, cb, requireAuth = false) => {
     registeredRoutes.push({ method: "PUT", endpoint, cb, requireAuth });
   },
 
+  /**
+   * Unregisters a route from the server.
+   * @param {string} endpoint The endpoint of the route to unregister.
+   */
   unregister(endpoint) {
     const index = registeredRoutes.findIndex(r => r.endpoint === endpoint);
     if (index !== -1) {
       registeredRoutes.splice(index, 1);
     }
   },
+
 
   fullServer: httpServer
 }

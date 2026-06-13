@@ -19,6 +19,7 @@ using Microsoft.VisualBasic;
 using System.Runtime.InteropServices;
 using Microsoft.Win32;
 using System.Linq;
+using System.Windows.Media;
 
 class PowerSaveBlocker
 {
@@ -331,7 +332,8 @@ private void StartNodeProcess(string workingDirectory, string backendExeName)
                         MinWidth = 200,
                         MinHeight = 150,
                         Title = "Positron Window",
-                        WindowStartupLocation = WindowStartupLocation.CenterScreen
+                        WindowStartupLocation = WindowStartupLocation.CenterScreen,
+                        AllowsTransparency = true
                     };
 
                     var dockPanel = new DockPanel();
@@ -520,6 +522,31 @@ break;
             data = new() { { "enabled", isEnabled.ToString().ToLower() } }
         }
         );
+    }
+    break;
+
+    case "setBackgroundTransparency":
+    if (args.Count > 0 && double.TryParse(args[0], System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out double alpha))
+    {
+        Current.Dispatcher.Invoke(() =>
+        {
+            var window = GetWindow(windowId);
+            var webView = GetWebView(windowId);
+
+            window?.Background = new SolidColorBrush(Color.FromArgb((byte)(alpha * 255), 0, 0, 0));
+            webView?.DefaultBackgroundColor = System.Drawing.Color.Transparent;
+        });
+    }
+    break;
+
+    case "setOpacity":
+    if (args.Count > 0 && double.TryParse(args[0], System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out double opacity))
+    {
+        Current.Dispatcher.Invoke(() =>
+        {
+            var window = GetWindow(windowId);
+            window?.Opacity = opacity;
+        });
     }
     break;
 

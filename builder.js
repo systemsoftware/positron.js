@@ -259,7 +259,6 @@ function performNativeBuild() {
         dotnetArgs.push(`/p:ApplicationIcon=${iconPath}`);
       }
 
-      // Add package.json metadata to Windows executable
       const appName = rootPackage.productName || rootPackage.name || "PositronApp";
       const version = rootPackage.version || "1.0.0";
       const author = rootPackage.author || "Positron";

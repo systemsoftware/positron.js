@@ -918,6 +918,28 @@ void handle_command(int window_id, const string& command, const vector<string>& 
         return;
     }
 
+    if(command == "setBackgroundTransparency") {
+        GtkWidget* w = get_win();
+        if (!w || args.empty()) return;
+        bool transparent = args[0] == "true";
+        gtk_widget_set_app_paintable(w, transparent);
+        if (transparent) {
+            GdkScreen* screen = gtk_widget_get_screen(w);
+            GdkVisual* visual = gdk_screen_get_rgba_visual(screen);
+            if (visual) gtk_widget_set_visual(w, visual);
+        }
+         return;
+    }
+
+    if(command == "setOpacity") {
+        GtkWidget* w = get_win();
+        if (!w || args.empty()) return;
+        double opacity = 1.0;
+        try { opacity = stod(args[0]); } catch (...) { return; }
+        gtk_widget_set_opacity(w, opacity);
+        return;
+    }
+
     // ── fallthrough: extension registry ─────────────────────────────────────
     auto registry = getExtensionRegistry();
     if (registry.count(command)) {

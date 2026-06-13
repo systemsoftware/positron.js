@@ -352,6 +352,25 @@ case "isFullscreen":
         IPCResponse(windowId: windowId, event: args.last ?? "isFullscreen-reply-\(windowId)", data: ["isFullscreen": isFullscreen ? "true" : "false"])
     )
 
+case "setBackgroundTransparency":
+    guard let window = windows[windowId] else { return }
+           if let alphaStr = args.first, let alpha = Double(alphaStr) {
+            window.isOpaque = false
+            window.backgroundColor = NSColor(white: 0, alpha: CGFloat(alpha))
+            
+            if let webView = GetWebView(windowId: windowId) {
+                webView.setValue(false, forKey: "drawsBackground")
+            }
+        }
+
+case "setOpacity":
+    guard let window = windows[windowId] else { return }
+    guard let opacityStr = args.first, let opacity = Double(opacityStr), opacity >= 0.0, opacity <= 1.0 else {
+        printError("setOpacity — expected a number between 0.0 and 1.0")
+        return
+    }
+    window.alphaValue = CGFloat(opacity)
+
 case "setSwipeNav":
         guard let window = windows[windowId],
               let webView = window.contentView as? WKWebView else {
