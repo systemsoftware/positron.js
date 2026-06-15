@@ -5,6 +5,7 @@ import Darwin
 import UserNotifications
 import Foundation
 import IOKit.pwr_mgt
+import UniformTypeIdentifiers
 
 
 // MARK: - Globals
@@ -22,6 +23,7 @@ let AUTH_TOKEN: String = {
 
 var windowObservations: [Int: NSKeyValueObservation] = [:]
 var navigationDelegates: [Int: WebViewNavigationDelegate] = [:]
+var trafficLightPositions: [Int: NSPoint] = [:]
 
 private var assertionID: IOPMAssertionID?
 
@@ -243,6 +245,7 @@ func handleCommand(windowId: Int, command: String, args: [String]) {
         let titlebarTransparent = args.count > 5 ? (args[5].lowercased() == "true") : false
         let titlebarVisible = args.count > 6 ? (args[6].lowercased() == "true") : true
         let preloadFile = args.count > 7 ? args[7].trimmingCharacters(in: .whitespacesAndNewlines) : nil
+        let titleBarStyle = args.count > 8 ? args[8] : "default"
 
         let styleMask: NSWindow.StyleMask = [
             .titled,
@@ -263,8 +266,31 @@ func handleCommand(windowId: Int, command: String, args: [String]) {
 
         newWindow.isReleasedWhenClosed = false
 
-                newWindow.titlebarAppearsTransparent = titlebarTransparent
-        newWindow.titleVisibility = titlebarVisible ? .visible : .hidden
+        switch titleBarStyle.lowercased() {
+        case "hidden":
+            newWindow.titleVisibility = .hidden
+            newWindow.titlebarAppearsTransparent = true
+            newWindow.styleMask.insert(.fullSizeContentView)
+            if #available(macOS 11.0, *) {
+                newWindow.toolbarStyle = .automatic
+            }
+        case "hiddeninset":
+            newWindow.titleVisibility = .hidden
+            newWindow.titlebarAppearsTransparent = true
+            newWindow.styleMask.insert(.fullSizeContentView)
+            if #available(macOS 11.0, *) {
+                newWindow.toolbarStyle = .unifiedCompact
+            }
+        case "custombuttons":
+            newWindow.titleVisibility = .hidden
+            newWindow.titlebarAppearsTransparent = true
+            newWindow.styleMask.insert(.fullSizeContentView)
+        case "default":
+            fallthrough
+        default:
+            newWindow.titlebarAppearsTransparent = titlebarTransparent
+            newWindow.titleVisibility = titlebarVisible ? .visible : .hidden
+        }
 
 
         // --- WebView IPC setup ---
@@ -310,6 +336,20 @@ func handleCommand(windowId: Int, command: String, args: [String]) {
         windows[windowId] = newWindow
 
         NotificationCenter.default.addObserver(
+            forName: NSWindow.didResizeNotification,
+            object: newWindow,
+            queue: .main
+        ) { [weak newWindow] _ in
+            guard let window = newWindow,
+                  let pos = trafficLightPositions[windowId],
+                  let closeButton = window.standardWindowButton(.closeButton),
+                  let superview = closeButton.superview else { return }
+            var frame = superview.frame
+            frame.origin = NSPoint(x: pos.x, y: window.frame.height - frame.height - pos.y)
+            superview.setFrameOrigin(frame.origin)
+        }
+
+        NotificationCenter.default.addObserver(
             forName: NSWindow.willCloseNotification,
             object: newWindow,
             queue: .main
@@ -320,7 +360,7 @@ func handleCommand(windowId: Int, command: String, args: [String]) {
         windowObservations.removeValue(forKey: windowId)
     }
             navigationDelegates.removeValue(forKey: windowId)
-
+            trafficLightPositions.removeValue(forKey: windowId)
 
             windows.removeValue(forKey: windowId)
             AppDelegate.shared?.ipcClient.send(
@@ -521,21 +561,62 @@ case "forceCloseWindow":
                     window.styleMask.remove(.closable)
                 }
 
-            case "setTitlebarTransparent":
+            case "setTitleBarStyle":
                 guard let window = windows[windowId] else { return }
-                guard let transparentStr = args.first, let transparent = Bool(transparentStr) else {
-                    printError("setTitlebarTransparent — expected boolean argument")
+                guard let style = args.first else {
+                    printError("setTitleBarStyle — expected style argument")
                     return
                 }
-                window.titlebarAppearsTransparent = transparent
+                switch style.lowercased() {
+                case "hidden":
+                    window.titleVisibility = .hidden
+                    window.titlebarAppearsTransparent = true
+                    window.styleMask.insert(.fullSizeContentView)
+                    if #available(macOS 11.0, *) {
+                        window.toolbarStyle = .automatic
+                    }
+                case "hiddeninset":
+                    window.titleVisibility = .hidden
+                    window.titlebarAppearsTransparent = true
+                    window.styleMask.insert(.fullSizeContentView)
+                    if #available(macOS 11.0, *) {
+                        window.toolbarStyle = .unifiedCompact
+                    }
+                case "custombuttons":
+                    window.titleVisibility = .hidden
+                    window.titlebarAppearsTransparent = true
+                    window.styleMask.insert(.fullSizeContentView)
+                case "default":
+                    fallthrough
+                default:
+                    window.titlebarAppearsTransparent = false
+                    window.titleVisibility = .visible
+                    window.styleMask.remove(.fullSizeContentView)
+                }
 
-            case "setTitlebarVisible":
+            case "setTrafficLightPosition":
+                guard let window = windows[windowId] else { return }
+                guard args.count >= 2, let x = Double(args[0]), let y = Double(args[1]) else {
+                    printError("setTrafficLightPosition — expected x and y coordinates")
+                    return
+                }
+                trafficLightPositions[windowId] = NSPoint(x: x, y: y)
+                if let closeButton = window.standardWindowButton(.closeButton),
+                   let superview = closeButton.superview {
+                    var frame = superview.frame
+                    frame.origin = NSPoint(x: x, y: window.frame.height - frame.height - y)
+                    superview.setFrameOrigin(frame.origin)
+                }
+
+            case "setTrafficLightVisible":
                 guard let window = windows[windowId] else { return }
                 guard let visibleStr = args.first, let visible = Bool(visibleStr) else {
-                    printError("setTitlebarVisible — expected boolean argument")
+                    printError("setTrafficLightVisible — expected boolean argument")
                     return
                 }
-                window.titleVisibility = visible ? .visible : .hidden
+                window.standardWindowButton(.closeButton)?.isHidden = !visible
+                window.standardWindowButton(.miniaturizeButton)?.isHidden = !visible
+                window.standardWindowButton(.zoomButton)?.isHidden = !visible
 
             case "canGoBack":
                 guard let window = windows[windowId] else { return }
@@ -554,17 +635,177 @@ case "forceCloseWindow":
             case "showFileOpenDialog":
                 guard let window = windows[windowId] else { return }
                 let panel = NSOpenPanel()
-                panel.allowsMultipleSelection = false
-                panel.canChooseDirectories = false
-                panel.canChooseFiles = true
+
+                // Parse JSON options from args[0]
+                if let jsonStr = args.first,
+                   let jsonData = jsonStr.data(using: .utf8),
+                   let opts = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any] {
+
+                    if let title = opts["title"] as? String {
+                        panel.title = title
+                    }
+                    if let multi = opts["multiSelect"] as? Bool {
+                        panel.allowsMultipleSelection = multi
+                    } else {
+                        panel.allowsMultipleSelection = false
+                    }
+                    if let chooseDirs = opts["canChooseDirectories"] as? Bool, chooseDirs {
+                        panel.canChooseDirectories = true
+                        panel.canChooseFiles = false
+                    } else {
+                        panel.canChooseDirectories = false
+                        panel.canChooseFiles = true
+                    }
+                    if let defaultPath = opts["defaultPath"] as? String, !defaultPath.isEmpty {
+                        panel.directoryURL = URL(fileURLWithPath: defaultPath)
+                    }
+                    if let filters = opts["filters"] as? [[String: Any]] {
+                        var allExtensions: [String] = []
+                        for filter in filters {
+                            if let exts = filter["extensions"] as? [String] {
+                                for ext in exts {
+                                    if ext != "*" {
+                                        allExtensions.append(ext)
+                                    }
+                                }
+                            }
+                        }
+                        if !allExtensions.isEmpty {
+                            if #available(macOS 11.0, *) {
+                                panel.allowedContentTypes = allExtensions.compactMap {
+                                    UTType(filenameExtension: $0)
+                                }
+                            } else {
+                                panel.allowedFileTypes = allExtensions
+                            }
+                        }
+                    }
+                } else {
+                    panel.allowsMultipleSelection = false
+                    panel.canChooseDirectories = false
+                    panel.canChooseFiles = true
+                }
+
+                let isMulti = panel.allowsMultipleSelection
                 panel.beginSheetModal(for: window) { response in
-                    if response == .OK, let url = panel.url {
-                        AppDelegate.shared?.ipcClient.send(
-                            IPCResponse(windowId: windowId, event: args.last ?? "showFileOpenDialog-reply-\(windowId)", data: ["filePath": url.path])
-                        )
+                    if response == .OK {
+                        if isMulti {
+                            let paths = panel.urls.map { $0.path }
+                            if let jsonData = try? JSONSerialization.data(withJSONObject: paths),
+                               let jsonString = String(data: jsonData, encoding: .utf8) {
+                                AppDelegate.shared?.ipcClient.send(
+                                    IPCResponse(windowId: windowId, event: args.last ?? "showFileOpenDialog-reply-\(windowId)", data: ["files": jsonString])
+                                )
+                            }
+                        } else if let url = panel.url {
+                            AppDelegate.shared?.ipcClient.send(
+                                IPCResponse(windowId: windowId, event: args.last ?? "showFileOpenDialog-reply-\(windowId)", data: ["filePath": url.path])
+                            )
+                        }
                     } else {
                         AppDelegate.shared?.ipcClient.send(
                             IPCResponse(windowId: windowId, event: args.last ?? "showFileOpenDialog-reply-\(windowId)", data: ["filePath": ""])
+                        )
+                    }
+                }
+
+            case "showSaveDialog":
+                guard let window = windows[windowId] else { return }
+                let savePanel = NSSavePanel()
+
+                if let jsonStr = args.first,
+                   let jsonData = jsonStr.data(using: .utf8),
+                   let opts = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any] {
+
+                    if let title = opts["title"] as? String {
+                        savePanel.title = title
+                    }
+                    if let defaultPath = opts["defaultPath"] as? String, !defaultPath.isEmpty {
+                        let url = URL(fileURLWithPath: defaultPath)
+                        savePanel.directoryURL = url.deletingLastPathComponent()
+                        savePanel.nameFieldStringValue = url.lastPathComponent
+                    }
+                    if let filters = opts["filters"] as? [[String: Any]] {
+                        var allExtensions: [String] = []
+                        for filter in filters {
+                            if let exts = filter["extensions"] as? [String] {
+                                for ext in exts {
+                                    if ext != "*" {
+                                        allExtensions.append(ext)
+                                    }
+                                }
+                            }
+                        }
+                        if !allExtensions.isEmpty {
+                            if #available(macOS 11.0, *) {
+                                savePanel.allowedContentTypes = allExtensions.compactMap {
+                                    UTType(filenameExtension: $0)
+                                }
+                            } else {
+                                savePanel.allowedFileTypes = allExtensions
+                            }
+                        }
+                    }
+                }
+
+                savePanel.beginSheetModal(for: window) { response in
+                    if response == .OK, let url = savePanel.url {
+                        AppDelegate.shared?.ipcClient.send(
+                            IPCResponse(windowId: windowId, event: args.last ?? "showSaveDialog-reply-\(windowId)", data: ["filePath": url.path])
+                        )
+                    } else {
+                        AppDelegate.shared?.ipcClient.send(
+                            IPCResponse(windowId: windowId, event: args.last ?? "showSaveDialog-reply-\(windowId)", data: ["filePath": ""])
+                        )
+                    }
+                }
+
+            case "showSelectMenu":
+                guard let window = windows[windowId] else { return }
+
+                var title = "Select"
+                var items: [String] = []
+                var defaultIndex = 0
+
+                if let jsonStr = args.first,
+                   let jsonData = jsonStr.data(using: .utf8),
+                   let opts = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any] {
+
+                    if let t = opts["title"] as? String {
+                        title = t
+                    }
+                    if let i = opts["items"] as? [String] {
+                        items = i
+                    }
+                    if let idx = opts["defaultIndex"] as? Int {
+                        defaultIndex = idx
+                    }
+                }
+
+                let alert = NSAlert()
+                alert.messageText = title
+                alert.addButton(withTitle: "OK")
+                alert.addButton(withTitle: "Cancel")
+
+                let popup = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 250, height: 28), pullsDown: false)
+                for item in items {
+                    popup.addItem(withTitle: item)
+                }
+                if defaultIndex >= 0 && defaultIndex < items.count {
+                    popup.selectItem(at: defaultIndex)
+                }
+                alert.accessoryView = popup
+
+                alert.beginSheetModal(for: window) { response in
+                    if response == .alertFirstButtonReturn {
+                        let selectedIndex = popup.indexOfSelectedItem
+                        let selectedTitle = popup.titleOfSelectedItem ?? ""
+                        AppDelegate.shared?.ipcClient.send(
+                            IPCResponse(windowId: windowId, event: args.last ?? "showSelectMenu-reply-\(windowId)", data: ["selected": selectedTitle, "index": "\(selectedIndex)"])
+                        )
+                    } else {
+                        AppDelegate.shared?.ipcClient.send(
+                            IPCResponse(windowId: windowId, event: args.last ?? "showSelectMenu-reply-\(windowId)", data: ["selected": "", "index": "-1"])
                         )
                     }
                 }
@@ -906,7 +1147,6 @@ case "addToContentBlocker":
             window.level = alwaysOnTop ? .floating : .normal
 
         case "setContextMenu":
-            print("Setting context menu for window \(windowId)")
             guard let window = windows[windowId] else { return }
             guard let jsonStr = args.first,
                   let data    = jsonStr.data(using: .utf8),
@@ -920,7 +1160,6 @@ case "addToContentBlocker":
             
             DispatchQueue.main.async {
                 if let view = window.contentView {
-                    print("Attaching context menu to content view for window \(windowId)")
                     view.menu = menu
                 } else {
                     printError("setContextMenu — no content view to attach menu")

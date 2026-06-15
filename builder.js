@@ -14,12 +14,11 @@ function performNativeBuild() {
   let buildingForLinux = process.argv.includes("--linux") || process.argv.includes("--l");
 
 
-  const appRoot = process.cwd(); // The developer's project folder
+  const appRoot = process.cwd(); 
   const nativeExtensionsMac = [];
   const nativeExtensionsWindows = [];
   const nativeExtensionsLinux = [];
   
-  // 1. Discover Extensions from the developer's package.json
   const rootPackagePath = path.join(appRoot, "package.json");
   if (!fs.existsSync(rootPackagePath)) return false;
 
@@ -34,12 +33,12 @@ function performNativeBuild() {
         const depDir = path.dirname(depPackagePath);
 
         if(depPackage.positron.requiredVersion) {
-          const requiredVersion = depPackage.positron.requiredVersion;
-          const rootVersion = rootPackage.dependencies["positron.js"];
+          const requiredVersion = depPackage.positron.requiredVersion.replace(/^[^\d]*/, ''); 
+          const rootVersion = process.argv.find(arg => arg.startsWith("--pv="))?.split("=")[1] || rootPackage.dependencies["positron.js"] || rootPackage.devDependencies["positron.js"] || rootPackage.peerDependencies["positron.js"] || "0.0.0";
           if(rootVersion.startsWith("file:")) {
             warn(`[Builder] Dependency "${dep}" specifies a required positron.js version of ${requiredVersion}, but the project is using a local file reference. Skipping version compatibility check for this dependency.`);
           } else {
-          if(!semver.satisfies(rootVersion, requiredVersion)) {
+          if(!semver.gte(rootVersion, requiredVersion)) {
             warn(`[Builder] Dependency "${dep}" requires positron.js version ${requiredVersion}, but the project has version ${rootVersion}. This may lead to compatibility issues.`);
           }
         }
@@ -66,7 +65,7 @@ function performNativeBuild() {
           command: depPackage.positron.command,
           sourceFile: path.join(depDir, depPackage.positron.platforms.darwin)
         });
-      } else {
+      } else if(buildingForMac) {
         warn(`[Builder] Dependency "${dep}" is missing a macOS platform source file. Skipping macOS native extension build for this dependency.`);
       }
       if(!missing.includes("platforms.win32")) {
@@ -75,7 +74,7 @@ function performNativeBuild() {
           command: depPackage.positron.command,
           sourceFile: path.join(depDir, depPackage.positron.platforms.win32)
         });
-      } else {
+      } else if(buildingForWindows) {
         warn(`[Builder] Dependency "${dep}" is missing a Windows platform source file. Skipping Windows native extension build for this dependency.`);
       }
       if(!missing.includes("platforms.linux")) {
@@ -84,7 +83,7 @@ function performNativeBuild() {
           command: depPackage.positron.command,
           sourceFile: path.join(depDir, depPackage.positron.platforms.linux)
         });
-      } else {
+      } else if(buildingForLinux) {
         warn(`[Builder] Dependency "${dep}" is missing a Linux platform source file. Skipping Linux native extension build for this dependency.`);
       }
       }
@@ -169,7 +168,7 @@ function performNativeBuild() {
         "-framework", "Cocoa",
         "-framework", "WebKit",
         ...addedFrameworksArgs
-      ]);
+      ], { stdio: "inherit" });
       success("[Builder] Native compilation successful.");
 
           if(process.platform == "darwin") {
@@ -245,19 +244,48 @@ function performNativeBuild() {
     try {
 
       const iconPath = path.join(appRoot, "icon.ico");
+      const isSelfContained = !process.argv.includes("--no-self-contained");
       const dotnetArgs = [
         "publish",
         path.join(coreWinDir, "PositronRuntime.csproj"),
         "-c", "Release",
         "-r", `win-${arch}`,
-        "--self-contained", "true",
+        "--self-contained", isSelfContained ? "true" : "false",
         "-o", outBinaryDir,
-        "/p:PublishSingleFile=true",
-        "/p:IncludeNativeLibrariesForSelfContained=true"
+        "/p:PublishSingleFile=true"
       ];
+      if (isSelfContained) {
+        dotnetArgs.push("/p:IncludeNativeLibrariesForSelfContained=true");
+        dotnetArgs.push("/p:EnableCompressionInSingleFile=true");
+      } else {
+        warn("[Builder] Building a framework-dependent executable. Ensure the target system has the appropriate .NET runtime installed.");
+      }
       if (fs.existsSync(iconPath)) {
         dotnetArgs.push(`/p:ApplicationIcon=${iconPath}`);
       }
+
+const args = process.argv;
+const argIndex = args.findIndex(arg => arg === "--dotnet");
+
+if (argIndex !== -1) {
+  let netVersion = "";
+
+  if (args[argIndex].includes("=")) {
+    netVersion = args[argIndex].split("=")[1];
+  } else if (argIndex + 1 < args.length) {
+    netVersion = args[argIndex + 1];
+  }
+
+  if (netVersion) {
+    netVersion = netVersion.replace(/^net/i, "");
+    
+    info(`[Builder] Restoring packages for ${netVersion}...`);
+    cp.execFileSync('dotnet', ['restore', path.join(coreWinDir, "PositronRuntime.csproj"), `/p:TargetFramework=net${netVersion}-windows`, `/p:RuntimeIdentifier=win-${arch}`], { stdio: 'inherit' });
+    
+    info(`[Builder] Targeting .NET version ${netVersion}`);
+    dotnetArgs.push(`/p:TargetFramework=net${netVersion}-windows`);
+  }
+}
 
       const appName = rootPackage.productName || rootPackage.name || "PositronApp";
       const version = rootPackage.version || "1.0.0";
@@ -270,6 +298,10 @@ function performNativeBuild() {
       dotnetArgs.push(`/p:Company=${author}`);
       dotnetArgs.push(`/p:Product=${bundleId}`);
       dotnetArgs.push(`/p:Description=${winCategory}`);
+
+      if(argIndex !== -1) {
+        dotnetArgs.push('--no-restore')
+      }
 
       cp.execFileSync("dotnet", dotnetArgs, { stdio: "inherit" });
       success("[Builder] Windows native compilation successful.");
@@ -358,7 +390,8 @@ function performNativeBuild() {
           }
         });
 
-        const compiler = process.argv.find(arg => arg.startsWith("--compiler="))?.split("=")[1] || "g++";
+        const compilerIndex = process.argv.findIndex(arg => arg === "--compiler");
+        const compiler = (compilerIndex !== -1 && process.argv.length > compilerIndex + 1) ? process.argv[compilerIndex + 1] : "g++";
 
         const gccArgs = [
           compiler, "-O3",

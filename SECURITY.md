@@ -9,7 +9,8 @@ currently being supported with security updates.
 
 | Version | Supported          |
 | ------- | ------------------ |
-| 1.0.x   | ✅ |
+| 1.1.x   | ✅ |
+| 1.0.x   | ❌ |
 
 
 ## Trust Boundary
@@ -28,14 +29,14 @@ Positron uses a local WebSocket server to bridge the Node.js backend and the nat
 - The WebSocket binds exclusively to `127.0.0.1` (localhost).
 - Connections require a secure `AUTH_TOKEN` (a uniquely generated UUID).
 - The `AUTH_TOKEN` is passed to the native child processes securely via environment variables and must be provided during the WebSocket connection handshake. Connections missing a valid token are immediately rejected.
+- The WebSocket server only allows one connection at a time. (v1.1.0+)
+- If the native layer gets a 503 , 401, or 403, it's a fatal error indicating the backend either rejected the connection due to an auth token mismatch, or something else hijacked the port. In these scenarios, the app will immediately kill all of its processes. (v1.1.0+)
 
 ### 2. Secure-by-Default JS Evaluation (v1.1.0+)
 The ability for the backend to evaluate arbitrary JavaScript inside the frontend webview is **disabled by default**. 
 - If a developer attempts to call `evaluateJavaScript()`, it will throw an error unless explicitly opted-in.
 - To enable this feature, developers must pass `allowEvaluateJS: true` to the `Window` constructor options.
 - Internal framework mechanisms rely on a separate, private evaluation channel that is isolated from public APIs, ensuring the framework remains functional while keeping the public surface secure.
-- The WebSocket server only allows one connection at a time. (v1.1.0+)
-- If the native layer gets a 503 , 401, or 403, it's a fatal error indicating the backend either rejected the connection due to an auth token mismatch, or something else hijacked the port. In these scenarios, the app will immediately kill all of its processes. (v1.1.0+)
 
 ### 3. URL Scheme Sanitization (v1.1.0+)
 To mitigate IPC-based Cross-Site Scripting (XSS) attacks, the native layers strictly validate URLs before loading them:

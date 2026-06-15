@@ -794,18 +794,229 @@ void handle_command(int window_id, const string& command, const vector<string>& 
     // ── showFileOpenDialog ───────────────────────────────────────────────────
     if (command == "showFileOpenDialog") {
         GtkWidget* w = get_win();
-        GtkWidget* chooser = gtk_file_chooser_dialog_new("Open File",
+
+        // Parse JSON options from args[0]
+        string title = "Open File";
+        bool multiSelect = false;
+        bool canChooseDirectories = false;
+        string defaultPath = "";
+        vector<pair<string, vector<string>>> filters;
+
+        if (!args.empty()) {
+            JsonParser* opts_parser = json_parser_new();
+            if (json_parser_load_from_data(opts_parser, args[0].c_str(), -1, nullptr)) {
+                JsonNode* opts_root = json_parser_get_root(opts_parser);
+                if (opts_root && JSON_NODE_HOLDS_OBJECT(opts_root)) {
+                    JsonObject* opts = json_node_get_object(opts_root);
+                    if (json_object_has_member(opts, "title")) {
+                        const gchar* t = json_object_get_string_member(opts, "title");
+                        if (t) title = t;
+                    }
+                    if (json_object_has_member(opts, "multiSelect"))
+                        multiSelect = json_object_get_boolean_member(opts, "multiSelect");
+                    if (json_object_has_member(opts, "canChooseDirectories"))
+                        canChooseDirectories = json_object_get_boolean_member(opts, "canChooseDirectories");
+                    if (json_object_has_member(opts, "defaultPath")) {
+                        const gchar* dp = json_object_get_string_member(opts, "defaultPath");
+                        if (dp) defaultPath = dp;
+                    }
+                    if (json_object_has_member(opts, "filters")) {
+                        JsonArray* farr = json_object_get_array_member(opts, "filters");
+                        if (farr) {
+                            guint flen = json_array_get_length(farr);
+                            for (guint fi = 0; fi < flen; fi++) {
+                                JsonObject* fobj = json_array_get_object_element(farr, fi);
+                                if (!fobj) continue;
+                                string fname = "";
+                                if (json_object_has_member(fobj, "name")) {
+                                    const gchar* n = json_object_get_string_member(fobj, "name");
+                                    if (n) fname = n;
+                                }
+                                vector<string> exts;
+                                if (json_object_has_member(fobj, "extensions")) {
+                                    JsonArray* earr = json_object_get_array_member(fobj, "extensions");
+                                    if (earr) {
+                                        guint elen = json_array_get_length(earr);
+                                        for (guint ei = 0; ei < elen; ei++) {
+                                            const gchar* ext = json_array_get_string_element(earr, ei);
+                                            if (ext) exts.push_back(ext);
+                                        }
+                                    }
+                                }
+                                filters.push_back({fname, exts});
+                            }
+                        }
+                    }
+                }
+            }
+            g_object_unref(opts_parser);
+        }
+
+        GtkFileChooserAction action = canChooseDirectories
+            ? GTK_FILE_CHOOSER_ACTION_SELECT_FOLDER
+            : GTK_FILE_CHOOSER_ACTION_OPEN;
+
+        GtkWidget* chooser = gtk_file_chooser_dialog_new(title.c_str(),
             w ? GTK_WINDOW(w) : nullptr,
-            GTK_FILE_CHOOSER_ACTION_OPEN,
+            action,
             "_Cancel", GTK_RESPONSE_CANCEL,
             "_Open",   GTK_RESPONSE_ACCEPT,
             nullptr);
 
-        struct FileOpenData { int wid; string ch; };
-        auto* d = new FileOpenData{ window_id, get_last_arg(args, "showFileOpenDialog-reply-" + to_string(window_id)) };
+        gtk_file_chooser_set_select_multiple(GTK_FILE_CHOOSER(chooser), multiSelect);
+
+        if (!defaultPath.empty())
+            gtk_file_chooser_set_current_folder(GTK_FILE_CHOOSER(chooser), defaultPath.c_str());
+
+        for (auto& fp : filters) {
+            GtkFileFilter* filter = gtk_file_filter_new();
+            gtk_file_filter_set_name(filter, fp.first.c_str());
+            for (auto& ext : fp.second) {
+                string pattern = (ext == "*") ? "*" : ("*." + ext);
+                gtk_file_filter_add_pattern(filter, pattern.c_str());
+            }
+            gtk_file_chooser_add_filter(GTK_FILE_CHOOSER(chooser), filter);
+        }
+
+        struct FileOpenData { int wid; string ch; bool multi; };
+        auto* d = new FileOpenData{ window_id, get_last_arg(args, "showFileOpenDialog-reply-" + to_string(window_id)), multiSelect };
 
         g_signal_connect(chooser, "response", G_CALLBACK(+[](GtkDialog* dlg, gint response, gpointer user_data) {
             auto* data = static_cast<FileOpenData*>(user_data);
+            if (response == GTK_RESPONSE_ACCEPT) {
+                if (data->multi) {
+                    GSList* list = gtk_file_chooser_get_filenames(GTK_FILE_CHOOSER(dlg));
+                    JsonBuilder* b = json_builder_new();
+                    json_builder_begin_object(b);
+                    json_builder_set_member_name(b, "files");
+                    json_builder_begin_array(b);
+                    for (GSList* it = list; it != nullptr; it = it->next) {
+                        json_builder_add_string_value(b, (const gchar*)it->data);
+                        g_free(it->data);
+                    }
+                    g_slist_free(list);
+                    json_builder_end_array(b);
+                    json_builder_end_object(b);
+                    send_ipc(data->wid, data->ch, b);
+                } else {
+                    gchar* filename = gtk_file_chooser_get_filename(GTK_FILE_CHOOSER(dlg));
+                    string file_path = filename ? filename : "";
+                    if (filename) g_free(filename);
+                    send_reply(data->wid, data->ch, "filePath", file_path);
+                }
+            } else {
+                if (data->multi) {
+                    JsonBuilder* b = json_builder_new();
+                    json_builder_begin_object(b);
+                    json_builder_set_member_name(b, "files");
+                    json_builder_begin_array(b);
+                    json_builder_end_array(b);
+                    json_builder_end_object(b);
+                    send_ipc(data->wid, data->ch, b);
+                } else {
+                    send_reply(data->wid, data->ch, "filePath", "");
+                }
+            }
+            delete data;
+            gtk_widget_destroy(GTK_WIDGET(dlg));
+        }), d);
+        gtk_widget_show_all(chooser);
+        return;
+    }
+
+    // ── showSaveDialog ──────────────────────────────────────────────────────
+    if (command == "showSaveDialog") {
+        GtkWidget* w = get_win();
+
+        // Parse JSON options from args[0]
+        string title = "Save File";
+        string defaultPath = "";
+        vector<pair<string, vector<string>>> filters;
+
+        if (!args.empty()) {
+            JsonParser* opts_parser = json_parser_new();
+            if (json_parser_load_from_data(opts_parser, args[0].c_str(), -1, nullptr)) {
+                JsonNode* opts_root = json_parser_get_root(opts_parser);
+                if (opts_root && JSON_NODE_HOLDS_OBJECT(opts_root)) {
+                    JsonObject* opts = json_node_get_object(opts_root);
+                    if (json_object_has_member(opts, "title")) {
+                        const gchar* t = json_object_get_string_member(opts, "title");
+                        if (t) title = t;
+                    }
+                    if (json_object_has_member(opts, "defaultPath")) {
+                        const gchar* dp = json_object_get_string_member(opts, "defaultPath");
+                        if (dp) defaultPath = dp;
+                    }
+                    if (json_object_has_member(opts, "filters")) {
+                        JsonArray* farr = json_object_get_array_member(opts, "filters");
+                        if (farr) {
+                            guint flen = json_array_get_length(farr);
+                            for (guint fi = 0; fi < flen; fi++) {
+                                JsonObject* fobj = json_array_get_object_element(farr, fi);
+                                if (!fobj) continue;
+                                string fname = "";
+                                if (json_object_has_member(fobj, "name")) {
+                                    const gchar* n = json_object_get_string_member(fobj, "name");
+                                    if (n) fname = n;
+                                }
+                                vector<string> exts;
+                                if (json_object_has_member(fobj, "extensions")) {
+                                    JsonArray* earr = json_object_get_array_member(fobj, "extensions");
+                                    if (earr) {
+                                        guint elen = json_array_get_length(earr);
+                                        for (guint ei = 0; ei < elen; ei++) {
+                                            const gchar* ext = json_array_get_string_element(earr, ei);
+                                            if (ext) exts.push_back(ext);
+                                        }
+                                    }
+                                }
+                                filters.push_back({fname, exts});
+                            }
+                        }
+                    }
+                }
+            }
+            g_object_unref(opts_parser);
+        }
+
+        GtkWidget* chooser = gtk_file_chooser_dialog_new(title.c_str(),
+            w ? GTK_WINDOW(w) : nullptr,
+            GTK_FILE_CHOOSER_ACTION_SAVE,
+            "_Cancel", GTK_RESPONSE_CANCEL,
+            "_Save",   GTK_RESPONSE_ACCEPT,
+            nullptr);
+        gtk_file_chooser_set_do_overwrite_confirmation(GTK_FILE_CHOOSER(chooser), TRUE);
+
+        if (!defaultPath.empty()) {
+            // Set directory part
+            string dir_part = defaultPath;
+            string file_part = "";
+            size_t slash_pos = defaultPath.find_last_of('/');
+            if (slash_pos != string::npos) {
+                dir_part = defaultPath.substr(0, slash_pos);
+                file_part = defaultPath.substr(slash_pos + 1);
+            }
+            if (!dir_part.empty())
+                gtk_file_chooser_set_current_folder(GTK_FILE_CHOOSER(chooser), dir_part.c_str());
+            if (!file_part.empty())
+                gtk_file_chooser_set_current_name(GTK_FILE_CHOOSER(chooser), file_part.c_str());
+        }
+
+        for (auto& fp : filters) {
+            GtkFileFilter* filter = gtk_file_filter_new();
+            gtk_file_filter_set_name(filter, fp.first.c_str());
+            for (auto& ext : fp.second) {
+                string pattern = (ext == "*") ? "*" : ("*." + ext);
+                gtk_file_filter_add_pattern(filter, pattern.c_str());
+            }
+            gtk_file_chooser_add_filter(GTK_FILE_CHOOSER(chooser), filter);
+        }
+
+        struct FileSaveData { int wid; string ch; };
+        auto* d = new FileSaveData{ window_id, get_last_arg(args, "showSaveDialog-reply-" + to_string(window_id)) };
+
+        g_signal_connect(chooser, "response", G_CALLBACK(+[](GtkDialog* dlg, gint response, gpointer user_data) {
+            auto* data = static_cast<FileSaveData*>(user_data);
             string file_path = "";
             if (response == GTK_RESPONSE_ACCEPT) {
                 gchar* filename = gtk_file_chooser_get_filename(GTK_FILE_CHOOSER(dlg));
@@ -816,6 +1027,91 @@ void handle_command(int window_id, const string& command, const vector<string>& 
             gtk_widget_destroy(GTK_WIDGET(dlg));
         }), d);
         gtk_widget_show_all(chooser);
+        return;
+    }
+
+    // ── showSelectMenu ──────────────────────────────────────────────────────
+    if (command == "showSelectMenu") {
+        GtkWidget* w = get_win();
+
+        // Parse JSON options from args[0]
+        string title = "Select";
+        vector<string> items;
+        int defaultIndex = 0;
+
+        if (!args.empty()) {
+            JsonParser* opts_parser = json_parser_new();
+            if (json_parser_load_from_data(opts_parser, args[0].c_str(), -1, nullptr)) {
+                JsonNode* opts_root = json_parser_get_root(opts_parser);
+                if (opts_root && JSON_NODE_HOLDS_OBJECT(opts_root)) {
+                    JsonObject* opts = json_node_get_object(opts_root);
+                    if (json_object_has_member(opts, "title")) {
+                        const gchar* t = json_object_get_string_member(opts, "title");
+                        if (t) title = t;
+                    }
+                    if (json_object_has_member(opts, "defaultIndex"))
+                        defaultIndex = (int)json_object_get_int_member(opts, "defaultIndex");
+                    if (json_object_has_member(opts, "items")) {
+                        JsonArray* iarr = json_object_get_array_member(opts, "items");
+                        if (iarr) {
+                            guint ilen = json_array_get_length(iarr);
+                            for (guint ii = 0; ii < ilen; ii++) {
+                                const gchar* item = json_array_get_string_element(iarr, ii);
+                                items.push_back(item ? item : "");
+                            }
+                        }
+                    }
+                }
+            }
+            g_object_unref(opts_parser);
+        }
+
+        GtkWidget* dialog = gtk_dialog_new_with_buttons(title.c_str(),
+            w ? GTK_WINDOW(w) : nullptr,
+            GTK_DIALOG_MODAL,
+            "_Cancel", GTK_RESPONSE_CANCEL,
+            "_OK",     GTK_RESPONSE_OK,
+            nullptr);
+
+        GtkWidget* content = gtk_dialog_get_content_area(GTK_DIALOG(dialog));
+        GtkWidget* combo = gtk_combo_box_text_new();
+        for (auto& item : items)
+            gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(combo), item.c_str());
+        gtk_combo_box_set_active(GTK_COMBO_BOX(combo), defaultIndex);
+        gtk_container_add(GTK_CONTAINER(content), combo);
+
+        struct SelectData { int wid; string ch; GtkWidget* combo; };
+        auto* d = new SelectData{ window_id, get_last_arg(args, "showSelectMenu-reply-" + to_string(window_id)), combo };
+
+        g_signal_connect(dialog, "response", G_CALLBACK(+[](GtkDialog* dlg, gint response, gpointer user_data) {
+            auto* data = static_cast<SelectData*>(user_data);
+            if (response == GTK_RESPONSE_OK) {
+                gint idx = gtk_combo_box_get_active(GTK_COMBO_BOX(data->combo));
+                gchar* text = gtk_combo_box_text_get_active_text(GTK_COMBO_BOX_TEXT(data->combo));
+                string selected = text ? text : "";
+                if (text) g_free(text);
+                JsonBuilder* b = json_builder_new();
+                json_builder_begin_object(b);
+                json_builder_set_member_name(b, "selected");
+                json_builder_add_string_value(b, selected.c_str());
+                json_builder_set_member_name(b, "index");
+                json_builder_add_string_value(b, to_string(idx).c_str());
+                json_builder_end_object(b);
+                send_ipc(data->wid, data->ch, b);
+            } else {
+                JsonBuilder* b = json_builder_new();
+                json_builder_begin_object(b);
+                json_builder_set_member_name(b, "selected");
+                json_builder_add_string_value(b, "");
+                json_builder_set_member_name(b, "index");
+                json_builder_add_string_value(b, "-1");
+                json_builder_end_object(b);
+                send_ipc(data->wid, data->ch, b);
+            }
+            delete data;
+            gtk_widget_destroy(GTK_WIDGET(dlg));
+        }), d);
+        gtk_widget_show_all(dialog);
         return;
     }
 

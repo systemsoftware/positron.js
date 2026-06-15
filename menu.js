@@ -68,7 +68,18 @@ class Separator extends MenuItem {
  * Gets the current template of the menu, which is an array of MenuItem instances that define the structure of the menu.
  */
 get template() {
-  return this.#template;
+
+    let tmp = this.#template.map(item => {
+    if (item instanceof Menu) {
+        return item.template;
+    } else if (item instanceof MenuItem) {
+        return item.json();
+    } else {
+        return item;
+    }
+});
+
+  return tmp;
 }
 
 /**

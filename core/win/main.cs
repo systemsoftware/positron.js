@@ -552,21 +552,302 @@ break;
 
     case "showFileOpenDialog":
     {
-        var dialog = new Microsoft.Win32.OpenFileDialog
+        string replyChannel = args[^1] ?? "showFileOpenDialog-reply-" + windowId;
+
+        // Parse JSON options from args[0], falling back to defaults
+        string optTitle = "";
+        string optDefaultPath = "";
+        bool optMultiSelect = false;
+        bool optCanChooseDirectories = false;
+        var filterParts = new List<string>();
+
+        try
         {
-            Multiselect = args.Count > 0 && args[0].ToLower() == "true"
-        };
-        bool? result = dialog.ShowDialog();
-        if (result == true)
+            if (args.Count > 0 && !string.IsNullOrWhiteSpace(args[0]))
+            {
+                using var optDoc = JsonDocument.Parse(args[0]);
+                var root = optDoc.RootElement;
+
+                if (root.TryGetProperty("title", out var tProp))
+                    optTitle = tProp.GetString() ?? "";
+                if (root.TryGetProperty("defaultPath", out var dpProp))
+                    optDefaultPath = dpProp.GetString() ?? "";
+                if (root.TryGetProperty("multiSelect", out var msProp))
+                    optMultiSelect = msProp.ValueKind == JsonValueKind.True;
+                if (root.TryGetProperty("canChooseDirectories", out var cdProp))
+                    optCanChooseDirectories = cdProp.ValueKind == JsonValueKind.True;
+
+                if (root.TryGetProperty("filters", out var fProp) && fProp.ValueKind == JsonValueKind.Array)
+                {
+                    foreach (var f in fProp.EnumerateArray())
+                    {
+                        string fName = f.TryGetProperty("name", out var fnProp) ? (fnProp.GetString() ?? "Files") : "Files";
+                        var exts = new List<string>();
+                        if (f.TryGetProperty("extensions", out var feProp) && feProp.ValueKind == JsonValueKind.Array)
+                        {
+                            foreach (var ext in feProp.EnumerateArray())
+                            {
+                                string extStr = ext.GetString() ?? "*";
+                                exts.Add(extStr == "*" ? "*.*" : $"*.{extStr}");
+                            }
+                        }
+                        if (exts.Count == 0) exts.Add("*.*");
+                        string extJoined = string.Join(";", exts);
+                        filterParts.Add($"{fName} ({extJoined})|{extJoined}");
+                    }
+                }
+            }
+        }
+        catch { /* use defaults on parse failure */ }
+
+        if (optCanChooseDirectories)
         {
-            string[] files = dialog.FileNames;
+            // Folder selection via System.Windows.Forms.FolderBrowserDialog
+            Current.Dispatcher.Invoke(() =>
+            {
+                var folderDialog = new System.Windows.Forms.FolderBrowserDialog();
+                if (!string.IsNullOrEmpty(optTitle))
+                    folderDialog.Description = optTitle;
+                if (!string.IsNullOrEmpty(optDefaultPath) && Directory.Exists(optDefaultPath))
+                    folderDialog.SelectedPath = optDefaultPath;
+
+                var folderResult = folderDialog.ShowDialog();
+                if (folderResult == System.Windows.Forms.DialogResult.OK)
+                {
+                    GetIPCClient().Send(new IPCResponse
+                    {
+                        windowId = windowId,
+                        @event = replyChannel,
+                        data = new() { { "filePath", folderDialog.SelectedPath } }
+                    });
+                }
+                else
+                {
+                    GetIPCClient().Send(new IPCResponse
+                    {
+                        windowId = windowId,
+                        @event = replyChannel,
+                        data = new() { { "filePath", "" } }
+                    });
+                }
+            });
+        }
+        else
+        {
+            // File selection via Microsoft.Win32.OpenFileDialog
+            var dialog = new Microsoft.Win32.OpenFileDialog
+            {
+                Multiselect = optMultiSelect
+            };
+
+            if (!string.IsNullOrEmpty(optTitle))
+                dialog.Title = optTitle;
+            if (filterParts.Count > 0)
+                dialog.Filter = string.Join("|", filterParts);
+            if (!string.IsNullOrEmpty(optDefaultPath))
+            {
+                if (Directory.Exists(optDefaultPath))
+                    dialog.InitialDirectory = optDefaultPath;
+                else if (Directory.Exists(Path.GetDirectoryName(optDefaultPath)))
+                    dialog.InitialDirectory = Path.GetDirectoryName(optDefaultPath)!;
+            }
+
+            bool? result = dialog.ShowDialog();
+            if (result == true)
+            {
+                if (optMultiSelect)
+                {
+                    GetIPCClient().Send(new IPCResponse
+                    {
+                        windowId = windowId,
+                        @event = replyChannel,
+                        data = new() { { "files", JsonSerializer.Serialize(dialog.FileNames) } }
+                    });
+                }
+                else
+                {
+                    GetIPCClient().Send(new IPCResponse
+                    {
+                        windowId = windowId,
+                        @event = replyChannel,
+                        data = new() { { "filePath", dialog.FileName } }
+                    });
+                }
+            }
+            else
+            {
+                GetIPCClient().Send(new IPCResponse
+                {
+                    windowId = windowId,
+                    @event = replyChannel,
+                    data = new() { { "filePath", "" } }
+                });
+            }
+        }
+    }
+    break;
+
+    case "showSaveDialog":
+    {
+        string replyChannel = args[^1] ?? "showSaveDialog-reply-" + windowId;
+
+        // Parse JSON options from args[0]
+        string optTitle = "";
+        string optDefaultPath = "";
+        var filterParts = new List<string>();
+
+        try
+        {
+            if (args.Count > 0 && !string.IsNullOrWhiteSpace(args[0]))
+            {
+                using var optDoc = JsonDocument.Parse(args[0]);
+                var root = optDoc.RootElement;
+
+                if (root.TryGetProperty("title", out var tProp))
+                    optTitle = tProp.GetString() ?? "";
+                if (root.TryGetProperty("defaultPath", out var dpProp))
+                    optDefaultPath = dpProp.GetString() ?? "";
+
+                if (root.TryGetProperty("filters", out var fProp) && fProp.ValueKind == JsonValueKind.Array)
+                {
+                    foreach (var f in fProp.EnumerateArray())
+                    {
+                        string fName = f.TryGetProperty("name", out var fnProp) ? (fnProp.GetString() ?? "Files") : "Files";
+                        var exts = new List<string>();
+                        if (f.TryGetProperty("extensions", out var feProp) && feProp.ValueKind == JsonValueKind.Array)
+                        {
+                            foreach (var ext in feProp.EnumerateArray())
+                            {
+                                string extStr = ext.GetString() ?? "*";
+                                exts.Add(extStr == "*" ? "*.*" : $"*.{extStr}");
+                            }
+                        }
+                        if (exts.Count == 0) exts.Add("*.*");
+                        string extJoined = string.Join(";", exts);
+                        filterParts.Add($"{fName} ({extJoined})|{extJoined}");
+                    }
+                }
+            }
+        }
+        catch { /* use defaults on parse failure */ }
+
+        var saveDialog = new Microsoft.Win32.SaveFileDialog();
+
+        if (!string.IsNullOrEmpty(optTitle))
+            saveDialog.Title = optTitle;
+        if (filterParts.Count > 0)
+            saveDialog.Filter = string.Join("|", filterParts);
+        if (!string.IsNullOrEmpty(optDefaultPath))
+        {
+            string? dir = Path.GetDirectoryName(optDefaultPath);
+            string file = Path.GetFileName(optDefaultPath);
+            if (!string.IsNullOrEmpty(dir) && Directory.Exists(dir))
+                saveDialog.InitialDirectory = dir;
+            if (!string.IsNullOrEmpty(file))
+                saveDialog.FileName = file;
+        }
+
+        bool? saveResult = saveDialog.ShowDialog();
+        if (saveResult == true)
+        {
             GetIPCClient().Send(new IPCResponse
             {
                 windowId = windowId,
-                @event = args[^1] ?? "showFileOpenDialog-reply-" + windowId,
-                data = new() { { "files", JsonSerializer.Serialize(files) } }
+                @event = replyChannel,
+                data = new() { { "filePath", saveDialog.FileName } }
             });
         }
+        else
+        {
+            GetIPCClient().Send(new IPCResponse
+            {
+                windowId = windowId,
+                @event = replyChannel,
+                data = new() { { "filePath", "" } }
+            });
+        }
+    }
+    break;
+
+    case "showSelectMenu":
+    {
+        string replyChannel = args[^1] ?? "showSelectMenu-reply-" + windowId;
+
+        string optTitle = "Select";
+        var items = new List<string>();
+        int defaultIndex = 0;
+
+        try
+        {
+            if (args.Count > 0 && !string.IsNullOrWhiteSpace(args[0]))
+            {
+                using var optDoc = JsonDocument.Parse(args[0]);
+                var root = optDoc.RootElement;
+
+                if (root.TryGetProperty("title", out var tProp))
+                    optTitle = tProp.GetString() ?? "Select";
+                if (root.TryGetProperty("defaultIndex", out var diProp) && diProp.TryGetInt32(out var di))
+                    defaultIndex = di;
+
+                if (root.TryGetProperty("items", out var iProp) && iProp.ValueKind == JsonValueKind.Array)
+                {
+                    foreach (var item in iProp.EnumerateArray())
+                        items.Add(item.GetString() ?? "");
+                }
+            }
+        }
+        catch { /* use defaults on parse failure */ }
+
+        Current.Dispatcher.Invoke(() =>
+        {
+            var selectWindow = new Window
+            {
+                Title = optTitle,
+                Width = 350,
+                Height = 150,
+                WindowStartupLocation = WindowStartupLocation.CenterScreen,
+                ResizeMode = ResizeMode.NoResize
+            };
+
+            var stack = new StackPanel { Margin = new Thickness(15) };
+            var combo = new ComboBox { Margin = new Thickness(0, 0, 0, 15) };
+            foreach (var item in items) combo.Items.Add(item);
+            combo.SelectedIndex = defaultIndex;
+
+            var buttonPanel = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right };
+            var okButton = new Button { Content = "OK", Width = 75, Margin = new Thickness(0, 0, 10, 0), IsDefault = true };
+            var cancelButton = new Button { Content = "Cancel", Width = 75, IsCancel = true };
+
+            bool confirmed = false;
+            okButton.Click += (s, e) => { confirmed = true; selectWindow.Close(); };
+            cancelButton.Click += (s, e) => { selectWindow.Close(); };
+
+            buttonPanel.Children.Add(okButton);
+            buttonPanel.Children.Add(cancelButton);
+            stack.Children.Add(combo);
+            stack.Children.Add(buttonPanel);
+            selectWindow.Content = stack;
+            selectWindow.ShowDialog();
+
+            if (confirmed && combo.SelectedIndex >= 0)
+            {
+                GetIPCClient().Send(new IPCResponse
+                {
+                    windowId = windowId,
+                    @event = replyChannel,
+                    data = new() { { "selected", combo.SelectedItem?.ToString() ?? "" }, { "index", combo.SelectedIndex.ToString() } }
+                });
+            }
+            else
+            {
+                GetIPCClient().Send(new IPCResponse
+                {
+                    windowId = windowId,
+                    @event = replyChannel,
+                    data = new() { { "selected", "" }, { "index", "-1" } }
+                });
+            }
+        });
     }
     break;
 

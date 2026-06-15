@@ -80,7 +80,7 @@ if (!isPackaged) {
     });
 
     process.on("exit", () => {
-  if (!isPackaged && renderProcess && !renderProcess.killed) {
+  if (renderProcess) {
     renderProcess.kill();
   }
 });
@@ -96,7 +96,9 @@ process.on("uncaughtException", (err) => {
 
     renderProcess.on("close", (code) => {
         info(`[Positron] Render process exited with code ${code}`);
-        process.exit(code);
+        if (!process.env.POSITRON_TEST_NO_EXIT) {
+            process.exit(code);
+        }
     });
  //   }, 60000);
 } else {
@@ -222,6 +224,14 @@ ws.on("message", raw => {
 
   ws.on("close", () => { 
     activeSocket = null; 
+    
+    for (const win of activeWindows) {
+      win.emit("close");
+      win.isDestroyed = true;
+    }
+    activeWindows.clear();
+    pendingWindows.clear();
+    commandQueue.length = 0;
   });
 });
 
@@ -390,32 +400,41 @@ sendIpc = (channel, args = []) => {
   * @param {string?} preloadFile
   * @returns 
   */
-create(width, height, darwinOptions = {
-  closable: true,
-  resizable: true,
-  minimizable: true,
-  titlebarTransparent: false,
-  titlebarVisible: true
-}, preloadFile = null) {
+create(width, height, darwinOptions = {}, preloadFile = null) {
   if (this.#created) {
     warn(`Window ${this.id} is already created.`);
     return;
   }
 
-    darwinOptions = {
+  const defaultOptions = {
     closable: true,
     resizable: true,
     minimizable: true,
     titlebarTransparent: false,
     titlebarVisible: true,
-    ...darwinOptions
-  }
+    titleBarStyle: "default"
+  };
+
+  const resolvedOptions = { ...defaultOptions, ...darwinOptions };
 
   this.#created = true;
   if(!width) width = this.options.width || 800;
   if(!height) height = this.options.height || 600;
-      this.sendCommand("createWindow", [width, height, ...Object.values(darwinOptions).map(val => String(val)), preloadFile || ""]);
-    this.emit("created");
+
+  const args = [
+    width,
+    height,
+    String(resolvedOptions.closable),
+    String(resolvedOptions.resizable),
+    String(resolvedOptions.minimizable),
+    String(resolvedOptions.titlebarTransparent),
+    String(resolvedOptions.titlebarVisible),
+    preloadFile || "",
+    String(resolvedOptions.titleBarStyle)
+  ];
+
+  this.sendCommand("createWindow", args);
+  this.emit("created");
 }
 
 /**
@@ -874,21 +893,31 @@ async getTitle() {
 }
 
 /**
- * Sets whether the window's titlebar is visible. Emits a "titlebar-visibility-updated" event with the new value when done.
- * @param {boolean} isVisible Whether the titlebar is visible.
+ * Sets the title bar style of the window.
+ * @param {"default" | "hidden" | "hiddenInset" | "customButtons"} style 
  */
-setTitlebarVisible(isVisible) {
-  this.sendCommand("setTitlebarVisible", [String(isVisible)]);
-  this.emit("titlebar-visibility-updated", isVisible);
+setTitleBarStyle(style) {
+  this.sendCommand("setTitleBarStyle", [style]);
+  this.emit("title-bar-style-updated", style);
 }
 
 /**
- * Sets whether the window's titlebar is transparent. Emits a "titlebar-transparency-updated" event with the new value when done.
- * @param {boolean} isTransparent Whether the titlebar is transparent.
+ * Sets the position of the traffic light buttons (macOS only).
+ * @param {number} x 
+ * @param {number} y 
  */
-setTitlebarTransparent(isTransparent) {
-  this.sendCommand("setTitlebarTransparent", [String(isTransparent)]);
-  this.emit("titlebar-transparency-updated", isTransparent);
+setTrafficLightPosition(x, y) {
+  this.sendCommand("setTrafficLightPosition", [String(x), String(y)]);
+  this.emit("traffic-light-position-updated", { x, y });
+}
+
+/**
+ * Sets the visibility of the traffic light buttons (macOS only).
+ * @param {boolean} visible 
+ */
+setTrafficLightVisible(visible) {
+  this.sendCommand("setTrafficLightVisible", [String(visible)]);
+  this.emit("traffic-light-visibility-updated", visible);
 }
 
 /**
@@ -1120,13 +1149,44 @@ async addToContentBlocker(config={ json:[], url:"", file:"", reload:true, clearE
 }
 
 /**
- * Displays a file open dialog and returns a Promise that resolves to an array of selected file paths, or null if the user cancelled the dialog.
+ * Displays a file open dialog and returns a Promise that resolves with the selected file path(s), or an empty string/array if the user cancelled.
  * @param {Object} options The options for the file open dialog.
- * @returns {Promise<Array<string>>} A promise that resolves to an array of selected file paths.
+ * @param {string} [options.title] The title of the dialog.
+ * @param {Array<{name: string, extensions: string[]}>} [options.filters] File type filters (e.g. [{name: "Images", extensions: ["png","jpg"]}, {name: "All Files", extensions: ["*"]}]).
+ * @param {boolean} [options.multiSelect=false] Whether to allow multiple file selection.
+ * @param {boolean} [options.canChooseDirectories=false] Whether to allow directory selection instead of files.
+ * @param {string} [options.defaultPath] The default directory to open the dialog in.
+ * @returns {Promise<Object>} A promise that resolves to {filePath: string} or {files: string} when multiSelect is true.
  */
 async showFileOpenDialog(options = {}) {
   this.emit("show-file-open-dialog", options);
-  return this.request("showFileOpenDialog", options);
+  return this.request("showFileOpenDialog", JSON.stringify(options));
+}
+
+/**
+ * Displays a save file dialog and returns a Promise that resolves to the selected file path, or an empty string if the user cancelled.
+ * @param {Object} options The options for the save dialog.
+ * @param {string} [options.title] The title of the dialog.
+ * @param {Array<{name: string, extensions: string[]}>} [options.filters] File type filters.
+ * @param {string} [options.defaultPath] The default path (directory and/or filename) for the dialog.
+ * @returns {Promise<Object>} A promise that resolves to {filePath: string}.
+ */
+async showSaveDialog(options = {}) {
+  this.emit("show-save-dialog", options);
+  return this.request("showSaveDialog", JSON.stringify(options));
+}
+
+/**
+ * Displays a native dropdown/select modal dialog and returns a Promise that resolves to the selected item.
+ * @param {Object} options The options for the select dialog.
+ * @param {string} [options.title="Select"] The title/label for the dialog.
+ * @param {string[]} options.items The list of items to display in the dropdown.
+ * @param {number} [options.defaultIndex=0] The index of the pre-selected item.
+ * @returns {Promise<Object>} A promise that resolves to {selected: string, index: number}, or {selected: "", index: -1} if cancelled.
+ */
+async select(options = {}) {
+  this.emit("show-select-menu", options);
+  return this.request("showSelectMenu", JSON.stringify(options));
 }
 
 
@@ -1602,5 +1662,5 @@ const pkgjson = findNearestPackageJson()?.packageJson;
 app.setName(pkgjson?.productName || pkgjson?.name || app.name);
 
 httpServer.listen(PORT, HOST, () => {
-info("IPC server running on " + HOST + ":" + PORT);
+info("IPC server running on " + (HOST !== "127.0.0.1" ? HOST : "") + ":" + PORT);
 });

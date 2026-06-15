@@ -101,13 +101,13 @@ npx positron build
 ```
 
 #### Dev
-This will build (or rebuild) the binary, then start the app
+This will build (or rebuild) the Native binary, then run the app
 ```bash
 npx positron dev
 ```
 
 #### Run
-This run the app without building
+Run the app without building the Native binary
 ```bash
 npx positron run
 ```
