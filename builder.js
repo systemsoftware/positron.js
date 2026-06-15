@@ -33,15 +33,16 @@ function performNativeBuild() {
         const depDir = path.dirname(depPackagePath);
 
         if(depPackage.positron.requiredVersion) {
-          const requiredVersion = depPackage.positron.requiredVersion.replace(/^[^\d]*/, ''); 
-          const rootVersion = process.argv.find(arg => arg.startsWith("--pv="))?.split("=")[1] || rootPackage.dependencies["positron.js"] || rootPackage.devDependencies["positron.js"] || rootPackage.peerDependencies["positron.js"] || "0.0.0";
-          if(rootVersion.startsWith("file:")) {
+          const requiredVersion = depPackage.positron.requiredVersion.replace(/^[^\d]*/, '');
+          const rawRootVersion = process.argv.find(arg => arg.startsWith("--pv="))?.split("=")[1] || rootPackage.dependencies["positron.js"] || rootPackage.devDependencies["positron.js"] || rootPackage.peerDependencies["positron.js"] || "0.0.0";
+          if(rawRootVersion.startsWith("file:")) {
             warn(`[Builder] Dependency "${dep}" specifies a required positron.js version of ${requiredVersion}, but the project is using a local file reference. Skipping version compatibility check for this dependency.`);
           } else {
-          if(!semver.gte(rootVersion, requiredVersion)) {
-            warn(`[Builder] Dependency "${dep}" requires positron.js version ${requiredVersion}, but the project has version ${rootVersion}. This may lead to compatibility issues.`);
+            const rootVersion = rawRootVersion.replace(/^[^\d]*/, '');
+            if(!semver.gte(rootVersion, requiredVersion)) {
+              warn(`[Builder] Dependency "${dep}" requires positron.js version ${requiredVersion}, but the project has version ${rootVersion}. This may lead to compatibility issues.`);
+            }
           }
-        }
         } 
 
           let missing = [];
