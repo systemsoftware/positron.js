@@ -4,6 +4,32 @@ const cp = require("child_process");
 const { success, error, info, warn } = require("./logs");
 const semver = require("semver");
 
+const VALID_COMMAND_RE = /^[A-Za-z0-9_:.-]{1,128}$/;
+
+
+const VALID_CLASSNAME_RE = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/;
+
+
+const ALLOWED_COMPILERS = new Set(["g++", "clang++", "c++"]);
+
+function validateExtensionMeta(dep, ext) {
+  if (!VALID_COMMAND_RE.test(ext.command)) {
+    warn(
+      `[Builder] [Security] Dependency "${dep}" has an invalid command "${ext.command}" ` +
+      `(must match ${VALID_COMMAND_RE}). Skipping to prevent code-generation injection.`
+    );
+    return false;
+  }
+  if (!VALID_CLASSNAME_RE.test(ext.className)) {
+    warn(
+      `[Builder] [Security] Dependency "${dep}" has an invalid className "${ext.className}" ` +
+      `(must match ${VALID_CLASSNAME_RE}). Skipping to prevent code-generation injection.`
+    );
+    return false;
+  }
+  return true;
+}
+
 const arch = process.argv.includes("--x64") ? "x64" : process.argv.includes("--arm64") ? "arm64" : process.arch;
 
 function performNativeBuild() {
@@ -60,10 +86,17 @@ function performNativeBuild() {
             continue;
           }
         
+        // Fix 2: validate command and className before they reach code generation.
+        const extMeta = {
+          className: depPackage.positron.className,
+          command: depPackage.positron.command,
+        };
+        if (!validateExtensionMeta(dep, extMeta)) continue;
+
         if(!missing.includes("platforms.darwin")) {
         nativeExtensionsMac.push({
-          className: depPackage.positron.className, 
-          command: depPackage.positron.command,
+          className: extMeta.className,
+          command: extMeta.command,
           sourceFile: path.join(depDir, depPackage.positron.platforms.darwin)
         });
       } else if(buildingForMac) {
@@ -71,8 +104,8 @@ function performNativeBuild() {
       }
       if(!missing.includes("platforms.win32")) {
         nativeExtensionsWindows.push({
-          className: depPackage.positron.className, 
-          command: depPackage.positron.command,
+          className: extMeta.className,
+          command: extMeta.command,
           sourceFile: path.join(depDir, depPackage.positron.platforms.win32)
         });
       } else if(buildingForWindows) {
@@ -80,8 +113,8 @@ function performNativeBuild() {
       }
       if(!missing.includes("platforms.linux")) {
         nativeExtensionsLinux.push({
-          className: depPackage.positron.className, 
-          command: depPackage.positron.command,
+          className: extMeta.className,
+          command: extMeta.command,
           sourceFile: path.join(depDir, depPackage.positron.platforms.linux)
         });
       } else if(buildingForLinux) {
@@ -391,20 +424,46 @@ if (argIndex !== -1) {
           }
         });
 
+        // Fix 1: validate --compiler against an allowlist before use.
         const compilerIndex = process.argv.findIndex(arg => arg === "--compiler");
-        const compiler = (compilerIndex !== -1 && process.argv.length > compilerIndex + 1) ? process.argv[compilerIndex + 1] : "g++";
+        const rawCompiler = (compilerIndex !== -1 && process.argv.length > compilerIndex + 1)
+          ? process.argv[compilerIndex + 1]
+          : "g++";
+        if (!ALLOWED_COMPILERS.has(rawCompiler)) {
+          error(
+            `[Builder] [Security] --compiler value "${rawCompiler}" is not in the allowlist ` +
+            `(${[...ALLOWED_COMPILERS].join(", ")}). Aborting to prevent command injection.`
+          );
+          return false;
+        }
+        const compiler = rawCompiler;
 
-        const gccArgs = [
-          compiler, "-O3",
+        // Fix 1 (continued): pass compiler and each argument as discrete argv elements
+        // to g_spawn / execFile rather than assembling a bash -c string. pkg-config
+        // flags are expanded inside the container via a minimal sh -c that receives
+        // no attacker-influenced values — only the hardcoded pkg-config invocation.
+        //
+        // Architecture: docker run … <image> sh -c '<compiler> <fixed-args> $(pkg-config …)'
+        // The only variable content inside the sh -c string is `compiler` (allowlisted
+        // above) and the container-side source paths (mapped from validated local paths).
+        const fixedSources = [
           "/framework/core/linux/main.cpp",
           "/framework/core/linux/Registry.cpp",
           ...mappedExtensions,
-          "-o", "/app/bin/positron-runtime",
+        ];
+        // Build the inner shell command with each token shell-quoted so that
+        // whitespace in container paths cannot split arguments.
+        const shellQuote = (s) => `'${s.replace(/'/g, "'\\''")}' `;
+        const innerCmd = [
+          shellQuote(compiler),
+          "-O3",
+          ...fixedSources.map(shellQuote),
+          "-o", shellQuote("/app/bin/positron-runtime"),
           "$(pkg-config --cflags --libs gtk+-3.0 webkit2gtk-4.1 json-glib-1.0 libnotify)"
         ].join(" ");
-        
+
         info("[Builder] Compiling inside Docker container...");
-        dockerArgs.push(dockerTag, "bash", "-c", gccArgs);
+        dockerArgs.push(dockerTag, "sh", "-c", innerCmd);
         const runRes = cp.spawnSync("docker", dockerArgs, { stdio: "inherit" });
         if (runRes.error) throw runRes.error;
         if (runRes.status !== 0) throw new Error("Docker run failed");

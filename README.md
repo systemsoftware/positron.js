@@ -2,8 +2,15 @@
 
 ![Banner](./pbannerfull.png)
 
-Positron is a lightweight, cross-platform hybrid application framework designed to build desktop applications using a native compiled runtime shell (Swift/Cocoa/WebKit on macOS, and C#/.NET on Windows) driven by a Node.js main process.
-Unlike traditional resource-heavy frameworks, Positron separates the native windowing/render process from the JavaScript application state, establishing a lightweight, dual-process environment unified by a localized WebSocket IPC channel.
+[![npm version](https://badge.fury.io/js/positron.js.svg)](https://www.npmjs.com/package/positron.js)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Documentation](https://img.shields.io/badge/docs-GitBook-blue)](https://positronjs.gitbook.io/v1)
+
+> A lightweight, cross-platform hybrid application framework for the modern web.
+
+**Positron** is designed to build desktop applications using a native compiled runtime shell (Swift/Cocoa/WebKit on macOS, C#/.NET on Windows, and C++/GTK on Linux) driven by a Node.js main process.
+
+Unlike traditional resource-heavy frameworks, Positron separates the native windowing and render processes from the JavaScript application state. This establishes a lightweight, dual-process environment unified by a lightning-fast, localized WebSocket IPC channel.
 
 ## Architecture & Core Components
 Positron operates via a split architecture:
@@ -12,39 +19,40 @@ Positron operates via a split architecture:
 3. IPC Router (ipc.js): A unified, asynchronous routing layer that handles bidirectional events between your web app render layers and your backend.
 
 ## Features
-- Native Framework Integration: Drops specialized heavy chromium embeddings in favor of native UI viewports (WebKit on macOS, .NET Webview2 on Windows).
-- Stitched Native Extensions: Seamlessly hooks developer-created third-party plugins directly into the native build registry at compile time.
-- Production Packager: Automatically abstracts bundle constraints to output native macOS .app structures (complete with mandatory Info.plist manifests) and clean Windows application folders.
-- Zero-Config Dev Builds: Automatically detects missing platform-specific native binaries on launch and compiles them in the background.
+- **Native Framework Integration**: Drops heavy Chromium embeddings in favor of native UI viewports (WebKit on macOS, .NET WebView2 on Windows, and WebKit2GTK on Linux).
+- **Stitched Native Extensions**: Seamlessly hooks developer-created third-party plugins directly into the native build registry at compile time.
+- **Production Packager**: Automatically abstracts bundle constraints to output native macOS `.app` structures (complete with mandatory `Info.plist` manifests) and clean Windows application folders.
+- **Zero-Config Dev Builds**: Automatically detects missing platform-specific native binaries on launch and compiles them in the background.
 
 ## Why Use Positron?
 
-Positron is built as a lightweight, secure alternative to Electron. Below is a detailed breakdown of how Positron compares to Electron across key architectural and performance metrics.
+Positron is built as a lightweight, secure alternative to Electron. Below is a detailed breakdown of how Positron compares across key architectural and performance metrics.
 
 | Metric | Electron | Positron |
 | :--- | :--- | :--- |
-| **Render Engine** | Chromium (bundled in every app) | System-native viewports (WebKit/WKWebView on macOS, WebView2 on Windows) |
-| **Process Model** | Multi-process tree (Main, Renderers, GPU, Network, Utility processes) | Dual-process layout (Single native Swift/C# UI runtime + Background Node.js controller) |
+| **Render Engine** | Chromium (bundled in every app) | System-native viewports (WebKit on macOS, WebView2 on Windows, WebKit2GTK on Linux) |
+| **Process Model** | Multi-process tree | Dual-process layout (Single native UI runtime + Background Node.js controller) |
 | **Minimum Bundle Size** | ~100MB+ (compressed), ~300MB+ (extracted) | **~60MB - 100MB** (depending on bundled assets and compiled backend) |
-| **Memory Footprint** | Heavy (runs full Chromium engine processes) | **Lightweight** (reuses system WebKit/WebView2 instances) |
-| **Native Extensions** | Requires Node C++ Addons (N-API/NAN) compiled against Node headers | **Stitched Native Extensions** written directly in Swift (macOS) or C# (Windows) |
-| **Security Isolation** | IPC bridging to Node with complex sandbox/context-isolation setups | **Strict separation by design**; renderer has zero direct access to Node.js APIs |
+| **Memory Footprint** | Heavy (runs full Chromium engine processes) | **Lightweight** (reuses system-native WebView instances) |
+| **Native Extensions** | Requires Node C++ Addons (N-API/NAN) | **Stitched Native Extensions** written directly in Swift, C#, or C++ |
+| **Security Isolation** | IPC bridging to Node with complex sandbox setups | **Strict separation by design**; renderer has zero direct access to Node.js APIs |
 
-## Prerequisites
-- Node.js (v16+)
-- macOS: Xcode Command Line Tools (swiftc)
-- Windows: .NET SDK (CLI tools capable of executing `dotnet publish`)
-- C++ compiler (G++ is the default), GTK+ 3 and WebKit2GTK on Linux
-  - Docker if building for Linux on macOS or Windows
+## 📋 Prerequisites
+- **Node.js**: v16+
+- **macOS**: Xcode Command Line Tools (`swiftc`)
+- **Windows**: .NET SDK (CLI tools capable of executing `dotnet publish`)
+- **Linux**: C++ compiler (`g++` is the default), GTK+ 3, and WebKit2GTK
+  - *Note*: Docker is required if building for Linux on a macOS or Windows host.
 
 ## Install
 ```bash
-npm i positron.js
+npm install positron.js
 ```
 
-## Usage Example
-Initialize your main entry point using the exposed Window and ipc instances:
-```js
+## 🛠 Usage Example
+Initialize your main entry point using the exposed `Window` and `ipc` instances:
+
+```javascript
 const { Window, ipc } = require('positron.js');
 
 // Bind asynchronous IPC listeners from renderer layers
@@ -60,10 +68,10 @@ const mainWindow = new Window({
 });
 
 // Load web application files
-mainWindow.on("ready", () => {
-mainWindow.loadFile('public/index.html');
-mainWindow.setTitle('My First Positron App');
-})
+mainWindow.on('ready', () => {
+  mainWindow.loadFile('public/index.html');
+  mainWindow.setTitle('My First Positron App');
+});
 ```
 
 ## Native Extensions Configuration
@@ -113,9 +121,9 @@ npx positron run
 ```
 
 ### Packaging
-This will rebuild the binary, then create a deployable version of the app
+This will rebuild the binary, then create a deployable version of the application:
 ```bash
-npx positron package [--m | --w || --l] [--arm64 || --x64]
+npx positron package [--m | --w | --l] [--arm64 | --x64]
 ```
 
 > Note: Windows & Linux support either arm64 or x64, while macOS only supports arm64.

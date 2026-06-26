@@ -148,6 +148,7 @@ _ipcWS.on("connection", (ws, req) => {
     win.emit("ready");
   });
   pendingWindows.clear();
+  appEvents.emit("ready");
 
 ws.on("message", raw => {
   try {
@@ -507,6 +508,9 @@ alert(message) {
  * @param {string} script The script to add.
  */
 addUserScript(script) {
+   if (!this.options.allowEvaluateJS) {
+    throw new Error("addUserScript is disabled by default for security. Set allowEvaluateJS: true in window options to enable it.");
+  }
   this.sendCommand("addUserScript", [script]);
   this.emit("user-script-added", { content: script, filePath: null });
 }
@@ -516,6 +520,9 @@ addUserScript(script) {
  * @param {string} filePath The path to the script file.
  */
 addUserScriptFromFile(filePath) {
+  if (!this.options.allowEvaluateJS) {
+    throw new Error("addUserScriptFromFile is disabled by default for security. Set allowEvaluateJS: true in window options to enable it.");
+  }
   fs.readFile(filePath, "utf-8", (err, data) => {
     if (err) {
       error(`Failed to read user script from ${filePath}:`, err);
@@ -1160,7 +1167,7 @@ async addToContentBlocker(config={ json:[], url:"", file:"", reload:true, clearE
  */
 async showFileOpenDialog(options = {}) {
   this.emit("show-file-open-dialog", options);
-  return this.request("showFileOpenDialog", JSON.stringify(options));
+  return this.request("showFileOpenDialog", { noTimeout: true }, JSON.stringify(options));
 }
 
 /**
@@ -1173,7 +1180,7 @@ async showFileOpenDialog(options = {}) {
  */
 async showSaveDialog(options = {}) {
   this.emit("show-save-dialog", options);
-  return this.request("showSaveDialog", JSON.stringify(options));
+  return this.request("showSaveDialog", { noTimeout: true }, JSON.stringify(options));
 }
 
 /**
@@ -1281,6 +1288,24 @@ setBackgroundOpacity(value) {
 setOpacity(value) {
   this.sendCommand("setOpacity", [String(value)]);
   this.emit("opacity-updated", value);
+}
+
+/**
+ * Gets the full HTML content of the window's web page. Returns a Promise that resolves to the HTML content as a string.
+ * @returns {Promise<string>} The full HTML content of the window's web page.
+ */
+async getWebContent() {
+  const res = await this.#evaluateJavaScriptInternal("document.documentElement.outerHTML.toString()");
+  return res;
+}
+
+/**
+ * Sets whether the window should always stay on top of other windows. Emits an "always-on-top-updated" event with the new value when done.
+ * @param {boolean} value Whether the window should always stay on top of other windows.
+ */
+async setAlwaysOnTop(value) {
+  this.sendCommand("setAlwaysOnTop", [String(value)]);
+  this.emit("always-on-top-updated", value);
 }
 
 }
@@ -1450,11 +1475,16 @@ userData: {
    * @param {any[]} args The arguments to send with the command.
    */
   sendToNative(command, args) {
-   const firstWin = activeWindows.values().next().value;
-    if (firstWin) {
-      firstWin.sendCommand(command, args);
+    const payload = JSON.stringify({ 
+      windowId: 0, 
+      command,
+      args: args || []
+    });
+
+    if (activeSocket && activeSocket.readyState === WebSocket.OPEN) {
+      activeSocket.send(payload);
     } else {
-      error("No active windows to send command to native layer");
+      error("No active socket to send command to native layer");
     }
   },
   
@@ -1465,13 +1495,46 @@ userData: {
    * @returns {Promise<any>} A Promise that resolves to the response from the native layer.
    */
   async requestFromNative(command, ...args) {
-    const firstWin = activeWindows.values().next().value;
-    if (firstWin) {
-      return await firstWin.request(command, ...args);
-    } else {
-      error("No active windows to send request to native layer");
-      return null;
-    }
+    return new Promise((resolve, reject) => {
+      if (activeSocket && activeSocket.readyState === WebSocket.OPEN) {
+        const reqId = crypto.randomUUID();
+        const replyChannel = `${command}-reply-${reqId}`;
+        
+        let settled = false;
+        const timeout = setTimeout(() => {
+          if (!settled) {
+            settled = true;
+            unsubscribe();
+            resolve({ error: `Request timed out waiting for reply on channel "${replyChannel}"` });
+          }
+        }, 7000);
+
+        const unsubscribe = ipc.handle(replyChannel, (data) => {
+          if (!settled) {
+            settled = true;
+            clearTimeout(timeout);
+            unsubscribe();
+            
+            for (const key in data) {
+              if (data[key] === "true") data[key] = true;
+              else if (data[key] === "false") data[key] = false;
+              else if (!isNaN(data[key])) data[key] = Number(data[key]);
+            }
+            resolve(data);
+          }
+        });
+
+        const payload = JSON.stringify({ 
+          windowId: 0, 
+          command,
+          args: [...args, replyChannel]
+        });
+
+        activeSocket.send(payload);
+      } else {
+        reject(new Error("No active socket to send request to native layer"));
+      }
+    });
   },
 
   /**
@@ -1654,7 +1717,51 @@ const server = {
   fullServer: httpServer
 }
 
-module.exports = { Window, ipc, isPackaged, app, ipcPort:PORT, clipboard, blockPowerSave, getOpenPort, PORT, httpServer:server, wsServer:_ipcWS, setPort };
+const dock = {
+  icon: {
+    show() {
+      app.sendToNative("showDockIcon");
+    },
+    hide() {
+      app.sendToNative("hideDockIcon");
+    },
+    toggle() {
+      app.sendToNative("toggleDockIcon");
+    },
+    get visible() {
+    return app.requestFromNative("isDockIconVisible")
+      .then(res => res?.isDockIconVisible === "true");
+  }
+  },
+
+  /**
+   * Bounces the dock icon to get the user's attention.
+   * @param {"informational"|"critical"} type The type of bounce to perform. "informational" will bounce the icon once, while "critical" will bounce it repeatedly until the user interacts with the application.
+   */
+  bounce(type = "informational") {
+    app.sendToNative("bounceDockIcon", [type]);
+  },
+
+  badge: {
+    /**
+     * Sets the badge text on the dock icon.
+     * @param {string} text The text to display on the badge. An empty string will remove the badge.
+     */
+    set(text) {
+      app.sendToNative("setDockBadge", [text]);
+    },
+    /**
+     * Gets the current badge text from the dock icon. Returns a Promise that resolves to the badge text as a string.
+     * @returns {Promise<string>} The current badge text.
+     */
+    get text() {
+    return app.requestFromNative("getDockBadge")
+      .then(res => res?.badge || "");
+  }
+  }
+}
+
+module.exports = { Window, ipc, isPackaged, app, ipcPort:PORT, clipboard, blockPowerSave, getOpenPort, PORT, httpServer:server, wsServer:_ipcWS, setPort, dock };
 
 const findNearestPackageJson = require("./findpackage");
 

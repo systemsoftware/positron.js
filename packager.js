@@ -110,13 +110,17 @@ async function packageMacOS(appRoot, distDir, appName) {
     <key>CFBundleShortVersionString</key>
     <string>${package.version || "1.0.0"}</string>
     <key>CFBundleIconFile</key>
-    <string>icon</string>
+    <string>${package.macIcon || "icon"}</string>
     <key>NSHighResolutionCapable</key>
     <true/>
     <key>NSHumanReadableCopyright</key>
     <string>${package.author || "Positron"}</string>
     <key>LSApplicationCategoryType</key>
     <string>${package.macCategory || "public.app-category.developer-tools"}</string>
+    <key>NSCameraUsageDescription</key>
+    <string>${package.macCameraDescription || "This app requires camera access."}</string>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>${package.macMicrophoneDescription || "This app requires microphone access."}</string>
 </dict>
 </plist>`;
   fs.writeFileSync(path.join(contentsPath, "Info.plist"), plistContent);

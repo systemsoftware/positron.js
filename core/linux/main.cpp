@@ -478,6 +478,37 @@ void handle_command(int window_id, const string& command, const vector<string>& 
         return;
     }
 
+    if (command == "hideDockIcon") {
+        GtkWidget* w = get_win();
+        if (w) gtk_window_set_skip_taskbar_hint(GTK_WINDOW(w), TRUE);
+        return;
+    }
+
+    if (command == "showDockIcon") {
+        GtkWidget* w = get_win();
+        if (w) gtk_window_set_skip_taskbar_hint(GTK_WINDOW(w), FALSE);
+        return;
+    }
+
+    if(command == "isDockIconVisible") {
+        bool is_visible = true;
+        GtkWidget* w = get_win();
+        if (w) {
+            is_visible = !gtk_window_get_skip_taskbar_hint(GTK_WINDOW(w));
+        }
+        send_reply(window_id, get_last_arg(args, "isDockIconVisible-reply-" + to_string(window_id)), "isDockIconVisible", is_visible ? "true" : "false");
+        return;
+    }
+
+    if(command == "setAlwaysOnTop") {
+        GtkWidget* w = get_win();
+        if (w && !args.empty()) {
+            bool always_on_top = args[0] == "true";
+            gtk_window_set_keep_above(GTK_WINDOW(w), always_on_top);
+        }
+        return;
+    }
+
     // ── showWindow ────────────────────────────────────────────────────────────
     if (command == "showWindow" || command == "show") {
         GtkWidget* w = get_win();
@@ -1380,7 +1411,11 @@ int main(int argc, char* argv[]) {
         if (exe_dir.empty()) { cerr << "[Linux Core] Failed to resolve executable path." << endl; return 1; }
         string resources_dir = exe_dir + "/resources";
 
-        // Find *-backend binary
+        // ── Fix 6: Harden backend binary discovery ────────────────────────────
+        // Enumerate resources_dir entries that match the "*-backend" convention.
+        // For each candidate, resolve symlinks with realpath(3) and confirm the
+        // real path still lives inside resources_dir. This prevents a symlink
+        // that escapes the bundle from being executed.
         string backend_bin;
         GDir* dir = g_dir_open(resources_dir.c_str(), 0, nullptr);
         if (dir) {
@@ -1388,7 +1423,40 @@ int main(int argc, char* argv[]) {
             while ((name = g_dir_read_name(dir)) != nullptr) {
                 string n = name;
                 if (n.size() > 8 && n.substr(n.size() - 8) == "-backend") {
-                    backend_bin = resources_dir + "/" + n;
+                    string candidate = resources_dir + "/" + n;
+
+                    // Resolve all symlinks.
+                    char resolved[PATH_MAX];
+                    if (realpath(candidate.c_str(), resolved) == nullptr) {
+                        cerr << "[Security] Backend candidate realpath() failed for "
+                             << candidate << " — skipping." << endl;
+                        continue;
+                    }
+
+                    // Confirm the resolved path is still inside resources_dir.
+                    string real_resources;
+                    char res_resolved[PATH_MAX];
+                    if (realpath(resources_dir.c_str(), res_resolved) != nullptr) {
+                        real_resources = string(res_resolved);
+                    } else {
+                        real_resources = resources_dir;
+                    }
+
+                    string real_str(resolved);
+                    if (real_str.rfind(real_resources + "/", 0) != 0) {
+                        cerr << "[Security] Backend candidate \"" << n
+                             << "\" resolves outside resources_dir — skipping." << endl;
+                        continue;
+                    }
+
+                    // Must be executable.
+                    if (access(resolved, X_OK) != 0) {
+                        cerr << "[Security] Backend candidate \"" << n
+                             << "\" is not executable — skipping." << endl;
+                        continue;
+                    }
+
+                    backend_bin = real_str; // use the resolved, canonical path
                     break;
                 }
             }
@@ -1417,8 +1485,12 @@ int main(int argc, char* argv[]) {
         for (auto& s : envp_storage) envp.push_back(s.c_str());
         envp.push_back(nullptr);
 
-        string cmd = "\"" + backend_bin + "\"";
-        const gchar* argv_spawn[] = { "/bin/sh", "-c", cmd.c_str(), nullptr };
+        // ── Fix 5 equivalent: no shell interpreter ───────────────────────────
+        // Previously: const gchar* argv_spawn[] = { "/bin/sh", "-c", cmd.c_str(), nullptr };
+        // Spawning via a shell means the shell inherits the environment and could
+        // be influenced by aliases, functions, or PATH manipulation. Instead, pass
+        // the binary directly as argv[0] — no shell is involved.
+        const gchar* argv_spawn[] = { backend_bin.c_str(), nullptr };
         GSpawnFlags flags = (GSpawnFlags)(G_SPAWN_DO_NOT_REAP_CHILD);
         GError* spawn_err = nullptr;
         gboolean ok = g_spawn_async(

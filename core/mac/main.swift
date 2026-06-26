@@ -466,11 +466,11 @@ case "forceCloseWindow":
         }
         (window.contentView as? WKWebView)?.load(URLRequest(url: url))
 
-    case "hide":
+    case "hide", "hideWindow":
         guard let window = windows[windowId] else { return }
         window.orderOut(nil)
 
-    case "show":
+    case "show", "showWindow":
         guard let window = windows[windowId] else { return }
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
@@ -618,12 +618,48 @@ case "forceCloseWindow":
                 window.standardWindowButton(.miniaturizeButton)?.isHidden = !visible
                 window.standardWindowButton(.zoomButton)?.isHidden = !visible
 
+
+            case "hideDockIcon":
+                NSApp.setActivationPolicy(.accessory)
+
+            case "showDockIcon":
+                NSApp.setActivationPolicy(.regular)
+
+            case "toggleDockIcon":
+                let currentPolicy = NSApp.activationPolicy()
+                if currentPolicy == .accessory {
+                    NSApp.setActivationPolicy(.regular)
+                } else {
+                    NSApp.setActivationPolicy(.accessory)
+                }
+
+            case "isDockIconVisible":
+                let isVisible = NSApp.activationPolicy() == .regular
+                AppDelegate.shared?.ipcClient.send(
+                    IPCResponse(windowId: windowId, event: args.last ?? "isDockIconVisible-reply-\(windowId)", data: ["isDockIconVisible": isVisible ? "true" : "false"])
+                )
+
+            case "bounceDockIcon":
+                let bounceType = args.first?.lowercased() == "critical" ? NSApplication.RequestUserAttentionType.criticalRequest : NSApplication.RequestUserAttentionType.informationalRequest
+                NSApp.requestUserAttention(bounceType)
+
+            case "setDockBadge":
+                let badge = args.first ?? ""
+                NSApp.dockTile.badgeLabel = badge
+
+            case "getDockBadge":
+                let badge = NSApp.dockTile.badgeLabel ?? ""
+                AppDelegate.shared?.ipcClient.send(
+                    IPCResponse(windowId: windowId, event: args.last ?? "getDockIconBadge-reply-\(windowId)", data: ["badge": badge])
+                )
+
             case "canGoBack":
                 guard let window = windows[windowId] else { return }
                 let canGoBack = (window.contentView as? WKWebView)?.canGoBack ?? false
                 AppDelegate.shared?.ipcClient.send(
                     IPCResponse(windowId: windowId, event: args.last ?? "canGoBack-reply-\(windowId)", data: ["canGoBack": canGoBack ? "true" : "false"])
                 )
+
 
             case "canGoForward":
                 guard let window = windows[windowId] else { return }
@@ -1451,49 +1487,88 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     func startNodeProcess() {
         guard let resourcePath = Bundle.main.resourcePath else { return }
-        
-        nodeProcess = Process()
-        nodeProcess?.executableURL = URL(fileURLWithPath: "/bin/zsh")
 
         IS_PACKAGED = true
-        
-        var command = """
-        export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
-        export POSITRON_PACKAGED=true
-        export POSITRON_AUTH_TOKEN="\(AUTH_TOKEN)"
-        if [ -f "$HOME/.zshrc" ]; then source "$HOME/.zshrc"; fi
-        if [ -f "$HOME/.bash_profile" ]; then source "$HOME/.bash_profile"; fi
-        
-        cd "\(resourcePath)"
-        
-        BACKEND_BIN=$(find . -maxdepth 1 -name "*-backend" | head -n 1)
-        if [ -n "$BACKEND_BIN" ] && [ -f "$BACKEND_BIN" ]; then
-            exec "$BACKEND_BIN"
-        else
-            exec "node" "."
-        fi
 
-        """
+        // ── Fix 6: Harden backend binary discovery ──────────────────────────────
+        // Resolve a candidate binary name matching the "*-backend" convention but
+        // validated to live within resourcePath and not be a symlink escaping the
+        // bundle boundary.
+        let discoveredBackendBin: String? = {
+            let fm = FileManager.default
+            guard let entries = try? fm.contentsOfDirectory(atPath: resourcePath) else { return nil }
+            for entry in entries {
+                guard entry.hasSuffix("-backend") else { continue }
+                let candidatePath = (resourcePath as NSString).appendingPathComponent(entry)
 
-        if let port = port {
-            command.insert(contentsOf: "export POSITRON_IPC_PORT=\(port); ", at: command.startIndex)
-        } else {
+                let isSymlink: ObjCBool = false
+                guard fm.fileExists(atPath: candidatePath),
+                      fm.isExecutableFile(atPath: candidatePath) else { continue }
+
+                let resolvedPath = URL(fileURLWithPath: candidatePath).resolvingSymlinksInPath().path
+                guard resolvedPath.hasPrefix(resourcePath + "/") || resolvedPath == resourcePath else {
+                    printError("[Security] Backend binary candidate \"\(entry)\" resolves outside the bundle — skipping.")
+                    continue
+                }
+                _ = isSymlink // suppress unused-variable warning
+                return candidatePath
+            }
+            return nil
+        }()
+
+        // ── Fix 5: No rc-file sourcing ──────────────────────────────────────────
+        // PATH already includes the homebrew and /usr/local/bin prefixes where
+        // nvm shims and homebrew-installed node live. Sourcing .zshrc or
+        // .bash_profile allows arbitrary user init code to run inside the app
+        // process, so those lines have been removed.
+        //
+        // ── Fix 4: AUTH_TOKEN passed via environment, NOT the command string ────
+        // Embedding the token in the shell command string makes it visible to
+        // `ps aux`. It is passed via Process.environment instead (see below).
+        let ipcPort = port.map { String($0) } ?? {
             printError("WARNING: Failed to get random open port for IPC. Defaulting to 9000, which may cause conflicts.")
+            return "9000"
+        }()
+
+        let command: String
+        if let bin = discoveredBackendBin {
+            // Use the validated backend binary directly — no shell glob needed.
+            command = """
+            export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
+            cd "\(resourcePath)"
+            exec "\(bin)"
+            """
+        } else {
+            command = """
+            export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
+            cd "\(resourcePath)"
+            exec node .
+            """
         }
 
+        nodeProcess = Process()
+        nodeProcess?.executableURL = URL(fileURLWithPath: "/bin/zsh")
         nodeProcess?.arguments = ["-c", command]
-        
+
+        // Pass sensitive values through the environment dictionary — they will
+        // not appear in the process command-line visible to `ps aux`.
+        var env = ProcessInfo.processInfo.environment
+        env["POSITRON_IPC_PORT"] = ipcPort
+        env["POSITRON_PACKAGED"] = "true"
+        env["POSITRON_AUTH_TOKEN"] = AUTH_TOKEN
+        nodeProcess?.environment = env
+
         let pipe = Pipe()
         nodeProcess?.standardOutput = pipe
         nodeProcess?.standardError = pipe
-        
+
         pipe.fileHandleForReading.readabilityHandler = { handle in
             let data = handle.availableData
             if data.count > 0, let str = String(data: data, encoding: .utf8) {
                 print("[NODE BACKGROUND] \(str)", terminator: "")
             }
         }
-        
+
         nodeProcess?.terminationHandler = { _ in
             printError("INFO: Node process terminated. Shutting down app.")
             NSApp.terminate(nil)

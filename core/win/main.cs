@@ -190,10 +190,27 @@ namespace PositronWindows
                 : basePath;
 
             string backendExeName = "positron-backend.exe";
-            if (Directory.Exists(targetDir)) {
+            if (Directory.Exists(targetDir))
+            {
                 string[] files = Directory.GetFiles(targetDir, "*-backend.exe");
-                if (files.Length > 0) {
-                    backendExeName = Path.GetFileName(files[0]);
+                if (files.Length > 0)
+                {
+                    // Fix 6: Resolve to a canonical path and verify it stays inside
+                    // targetDir before trusting it. This prevents a path-traversal
+                    // attack via a crafted filename containing ".." segments.
+                    string candidate = Path.GetFullPath(files[0]);
+                    string canonicalTargetDir = Path.GetFullPath(targetDir)
+                        .TrimEnd(Path.DirectorySeparatorChar);
+
+                    if (candidate.StartsWith(canonicalTargetDir + Path.DirectorySeparatorChar,
+                            StringComparison.OrdinalIgnoreCase))
+                    {
+                        backendExeName = Path.GetFileName(candidate);
+                    }
+                    else
+                    {
+                        error($"[Security] Backend binary candidate resolves outside targetDir — skipping: {candidate}");
+                    }
                 }
             }
 
@@ -1111,13 +1128,38 @@ case "resizeWindow":
     winRsz.Height = rsH;
     break;
 
-// Node uses "hideWindow"/"showWindow", not "hide"/"show"
 case "hideWindow":
     if (WindowsMap.TryGetValue(windowId, out var winHideW)) winHideW.Hide();
     break;
 
 case "showWindow":
     if (WindowsMap.TryGetValue(windowId, out var winShowW)) winShowW.Show();
+    break;
+
+case "showDockIcon":
+   if (Current != null)
+   {
+       Current.MainWindow.ShowInTaskbar = true;
+   }
+   break;
+
+case "hideDockIcon":
+   if (Current != null)
+   {
+       Current.MainWindow.ShowInTaskbar = false;
+   }
+   break;
+
+case "toggleDockIcon":
+   if (Current != null)
+   {
+       Current.MainWindow.ShowInTaskbar = !Current.MainWindow.ShowInTaskbar;
+   }
+   break;
+
+case "setAlwaysOnTop":
+    if (WindowsMap.TryGetValue(windowId, out var winTop))
+        winTop.Topmost = args.Count > 0 && args[0].ToLower() == "true";
     break;
 
 case "addUserScript":
